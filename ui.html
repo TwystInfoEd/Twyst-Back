@@ -1,0 +1,527 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width,initial-scale=1"/>
+<title>Twyst Motion Studio</title>
+<style>
+*{box-sizing:border-box;margin:0;padding:0}
+:root{
+  color-scheme:dark;
+  --bg:#0c0d0f;
+  --surface:#111318;
+  --surface2:#181c22;
+  --surface3:#1e2330;
+  --border:rgba(255,255,255,0.07);
+  --border2:rgba(255,255,255,0.12);
+  --text:#dde3ec;
+  --muted:#636d7e;
+  --hint:#3d4554;
+  --teal:#5dc9b0;
+  --teal-dim:#2a6558;
+  --amber:#c9a55d;
+  --amber-dim:#6b4e1a;
+  --indigo:#7b8fe8;
+  --indigo-dim:#2e3870;
+  --coral:#d4756b;
+  --coral-dim:#6b2f29;
+  --mono:"SFMono-Regular",Consolas,monospace;
+  --sans:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;
+  --r:6px;
+  --r2:10px;
+}
+html,body{min-height:100%;background:var(--bg);color:var(--text);font-family:var(--sans);font-size:13px;line-height:1.5;-webkit-font-smoothing:antialiased}
+a{color:var(--indigo);text-decoration:none}
+a:hover{color:var(--text)}
+.app{max-width:1320px;margin:0 auto;padding:32px 24px 56px}
+
+.header{margin-bottom:32px;padding-bottom:24px;border-bottom:1px solid var(--border)}
+.header h1{font-size:15px;font-weight:500;letter-spacing:0.01em;color:var(--text)}
+.header p{margin-top:5px;font-size:12px;color:var(--muted);max-width:56ch;line-height:1.6}
+.status-row{display:flex;flex-wrap:wrap;gap:5px;margin-top:14px}
+.tag{display:inline-flex;align-items:center;gap:5px;padding:3px 9px;border-radius:4px;border:1px solid var(--border2);background:var(--surface);font-size:11px;color:var(--muted);letter-spacing:0.01em}
+.dot{width:6px;height:6px;border-radius:50%;background:var(--muted);flex-shrink:0}
+.dot.teal{background:var(--teal)}
+.dot.amber{background:var(--amber)}
+.dot.indigo{background:var(--indigo)}
+
+.layout{display:grid;grid-template-columns:1fr 300px;gap:14px;align-items:start}
+.main{display:grid;gap:14px}
+.sidebar{display:grid;gap:14px;position:sticky;top:24px}
+
+.card{background:var(--surface);border:1px solid var(--border);border-radius:var(--r2);overflow:hidden}
+.card-head{padding:13px 16px;border-bottom:1px solid var(--border);display:flex;align-items:center;justify-content:space-between;gap:12px}
+.card-head h2{font-size:12px;font-weight:500;color:var(--text);letter-spacing:0.02em}
+.card-head .sub{font-size:11px;color:var(--muted)}
+.card-body{padding:16px}
+
+.score-wrap{padding:20px 18px 0}
+.score-eyebrow{font-size:10px;text-transform:uppercase;letter-spacing:0.14em;color:var(--muted);margin-bottom:10px}
+.score-num{font-size:52px;font-weight:300;letter-spacing:-0.04em;line-height:1;color:var(--text);font-variant-numeric:tabular-nums}
+.score-num span{font-size:22px;color:var(--muted);margin-left:2px}
+.bar-track{height:2px;background:var(--surface3);margin:14px 0 0;border-radius:1px;overflow:hidden}
+.bar-fill{height:100%;border-radius:1px;background:var(--teal);transition:width 250ms ease,background 250ms}
+
+.metric-row{display:grid;grid-template-columns:1fr 1fr;border-bottom:1px solid var(--border)}
+.metric-row.three{grid-template-columns:1fr 1fr 1fr}
+.metric{padding:11px 14px;border-right:1px solid var(--border)}
+.metric:last-child{border-right:0}
+.metric .k{font-size:10px;text-transform:uppercase;letter-spacing:0.12em;color:var(--muted);margin-bottom:4px}
+.metric .v{font-size:13px;font-weight:500;color:var(--text);word-break:break-word;font-variant-numeric:tabular-nums}
+
+.feedback-wrap{padding:13px 16px;font-size:12px;color:var(--muted);line-height:1.6;border-top:1px solid var(--border)}
+.feedback-wrap.good{color:var(--teal)}
+.feedback-wrap.warn{color:var(--amber)}
+.feedback-wrap.bad{color:var(--coral)}
+
+.two-col{display:grid;grid-template-columns:1fr 1fr;gap:14px}
+
+.field{display:grid;gap:5px;margin-bottom:11px}
+.field:last-child{margin-bottom:0}
+label{font-size:10px;text-transform:uppercase;letter-spacing:0.12em;color:var(--muted)}
+input,select,textarea{width:100%;background:var(--surface2);border:1px solid var(--border2);border-radius:var(--r);color:var(--text);padding:7px 10px;font:inherit;font-size:12px;outline:none;transition:border-color 120ms;appearance:none;-webkit-appearance:none}
+input:focus,select:focus{border-color:rgba(123,143,232,0.4)}
+select option{background:var(--surface)}
+.row2{display:grid;grid-template-columns:1fr 1fr;gap:10px}
+.btn-row{display:flex;gap:7px;flex-wrap:wrap;margin-top:13px}
+button{appearance:none;border-radius:var(--r);padding:6px 12px;font:inherit;font-size:12px;font-weight:500;cursor:pointer;transition:opacity 110ms;min-height:30px;letter-spacing:0.01em}
+button:hover:not(:disabled){opacity:0.82}
+button:active:not(:disabled){opacity:0.68}
+button:disabled{cursor:not-allowed;opacity:0.3}
+
+.btn-start{background:var(--indigo-dim);color:var(--indigo);border:1px solid rgba(123,143,232,0.25)}
+.btn-stop{background:var(--coral-dim);color:var(--coral);border:1px solid rgba(212,117,107,0.25)}
+.btn-ghost{background:var(--surface2);color:var(--muted);border:1px solid var(--border2)}
+.btn-ghost:hover:not(:disabled){color:var(--text)}
+.btn-sm{padding:4px 10px;font-size:11px;min-height:26px}
+
+.chart-body{padding:14px 16px}
+canvas{display:block;width:100%;height:200px}
+.legend{display:flex;flex-wrap:wrap;gap:10px;margin-top:10px}
+.leg-item{display:inline-flex;align-items:center;gap:5px;font-size:11px;color:var(--muted)}
+.leg-sw{width:16px;height:1.5px;border-radius:1px}
+
+.motion-list{display:grid}
+.motion-item{display:flex;align-items:center;justify-content:space-between;gap:12px;padding:10px 14px;border-bottom:1px solid var(--border)}
+.motion-item:last-child{border-bottom:0}
+.motion-item strong{font-size:12px;font-weight:500;display:block}
+.motion-item small{font-size:11px;color:var(--muted)}
+.motion-actions{display:flex;gap:5px;flex-shrink:0}
+
+.table-wrap{overflow:auto}
+table{width:100%;border-collapse:collapse;font-size:12px}
+th,td{padding:8px 14px;text-align:left;border-bottom:1px solid var(--border)}
+th{font-size:10px;text-transform:uppercase;letter-spacing:0.1em;color:var(--muted);background:var(--surface2);font-weight:500}
+td{color:var(--text);font-variant-numeric:tabular-nums}
+.empty td{color:var(--muted)}
+
+.session-grid{display:grid;grid-template-columns:repeat(3,1fr);border-top:1px solid var(--border)}
+
+.rep-strip{padding:14px;display:flex;flex-wrap:wrap;gap:7px}
+.rep-chip{flex:1 1 120px;padding:9px 11px;background:var(--surface2);border:1px solid var(--border);border-radius:var(--r)}
+.rep-chip.done{border-color:var(--teal-dim)}
+.rep-chip.active{border-color:var(--amber-dim)}
+.rep-top{display:flex;align-items:baseline;justify-content:space-between;margin-bottom:5px}
+.rep-lbl{font-size:12px;font-weight:500}
+.rep-meta{font-size:10px;color:var(--muted)}
+.rep-note{font-size:10px;color:var(--muted);margin-bottom:6px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.rep-bar{height:2px;background:var(--border);border-radius:1px;overflow:hidden}
+.rep-bar-fill{height:100%}
+.done .rep-bar-fill{background:var(--teal)}
+.active .rep-bar-fill{background:var(--amber)}
+.rep-empty{font-size:11px;color:var(--muted)}
+
+.footer{margin-top:28px;padding-top:18px;border-top:1px solid var(--border);font-size:11px;color:var(--hint);text-align:center;letter-spacing:0.01em}
+
+@media(max-width:920px){.layout,.two-col,.row2{grid-template-columns:1fr}}
+</style>
+</head>
+<body>
+<div class="app">
+
+  <div class="header">
+    <h1>Twyst Motion Studio</h1>
+    <p>Record a reference motion, then stream incoming frames to compare and score each repetition in real time.</p>
+    <div class="status-row">
+      <span class="tag"><span class="dot" id="modeDot"></span><span id="modeText">Idle</span></span>
+      <span class="tag"><span class="dot indigo"></span><span id="frameText">0 frames</span></span>
+      <span class="tag"><span class="dot" id="repDotTag"></span><span id="repText">0 reps</span></span>
+      <span class="tag"><span id="refText">No reference</span></span>
+      <a class="tag" href="/docs" target="_blank" rel="noreferrer">API docs ↗</a>
+      <a class="tag" href="/health" target="_blank" rel="noreferrer"><span class="dot teal"></span>Health</a>
+    </div>
+  </div>
+
+  <div class="layout">
+    <div class="main">
+
+      <div class="two-col">
+        <div class="card">
+          <div class="card-head"><h2>Record reference</h2><span class="sub">Capture a baseline</span></div>
+          <div class="card-body">
+            <div class="field"><label for="recordName">Motion name</label><input id="recordName" value="squat_reference"/></div>
+            <div class="field"><label for="recordOrder">Bézier order</label><input id="recordOrder" type="number" min="2" max="16" value="8"/></div>
+            <div class="btn-row">
+              <button class="btn-start" id="startRecordBtn">Start recording</button>
+              <button class="btn-stop" id="stopRecordBtn" disabled>Stop</button>
+              <button class="btn-ghost" id="refreshRecordBtn">Refresh</button>
+            </div>
+          </div>
+        </div>
+
+        <div class="card">
+          <div class="card-head"><h2>Compare motion</h2><span class="sub">Score reps live</span></div>
+          <div class="card-body">
+            <div class="field"><label for="referenceSelect">Reference motion</label><select id="referenceSelect"></select></div>
+            <div class="row2">
+              <div class="field"><label for="compareOrder">Bézier order</label><input id="compareOrder" type="number" min="2" max="16" value="8"/></div>
+              <div class="field"><label for="signalSelect">Signal</label>
+                <select id="signalSelect">
+                  <option value="roll">roll</option><option value="pitch" selected>pitch</option><option value="yaw">yaw</option>
+                  <option value="acc_x">acc_x</option><option value="acc_y">acc_y</option><option value="acc_z">acc_z</option>
+                  <option value="gyro_x">gyro_x</option><option value="gyro_y">gyro_y</option><option value="gyro_z">gyro_z</option>
+                  <option value="acc_mag">acc_mag</option><option value="gyro_mag">gyro_mag</option>
+                </select>
+              </div>
+            </div>
+            <div class="btn-row">
+              <button class="btn-start" id="startCompareBtn" disabled>Start compare</button>
+              <button class="btn-stop" id="stopCompareBtn" disabled>Stop</button>
+              <button class="btn-ghost" id="refreshCompareBtn">Refresh</button>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="card-head">
+          <h2 id="chartTitle">Live stream</h2>
+          <div class="legend" id="chartLegend">
+            <span class="leg-item"><span class="leg-sw" style="background:var(--teal)"></span>live</span>
+          </div>
+        </div>
+        <div class="chart-body">
+          <canvas id="liveChart" width="1200" height="400"></canvas>
+        </div>
+      </div>
+
+      <div class="two-col">
+        <div class="card">
+          <div class="card-head"><h2>Session snapshot</h2></div>
+          <div class="session-grid" id="sessionMetrics"></div>
+          <div class="table-wrap">
+            <table><thead><tr><th>Signal</th><th>Value</th></tr></thead><tbody id="frameTable"></tbody></table>
+          </div>
+        </div>
+        <div class="card">
+          <div class="card-head"><h2>Repetition log</h2></div>
+          <div class="table-wrap">
+            <table>
+              <thead><tr><th>Rep</th><th>Score</th><th>d_curve</th><th>ΔA</th><th>Feedback</th></tr></thead>
+              <tbody id="repTable"></tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="card-head"><h2>Motion library</h2><button class="btn-ghost btn-sm" id="reloadMotionsBtn">Reload</button></div>
+        <div class="motion-list" id="motionList"></div>
+      </div>
+
+    </div>
+
+    <div class="sidebar">
+      <div class="card">
+        <div class="score-wrap">
+          <div class="score-eyebrow">Comparison score</div>
+          <div class="score-num" id="scoreValue">0<span>/ 100</span></div>
+          <div class="bar-track"><div class="bar-fill" id="scoreBar" style="width:0%"></div></div>
+        </div>
+        <div class="metric-row" style="margin-top:0;border-top:1px solid var(--border)">
+          <div class="metric"><div class="k">Completed</div><div class="v" id="completedRepCount">0</div></div>
+          <div class="metric"><div class="k">Current rep</div><div class="v" id="currentRepLabel">—</div></div>
+        </div>
+        <div class="metric-row three">
+          <div class="metric"><div class="k">d_curve</div><div class="v" id="curveValue">—</div></div>
+          <div class="metric"><div class="k">ΔA</div><div class="v" id="amplitudeValue">—</div></div>
+          <div class="metric"><div class="k">Progress</div><div class="v" id="progressValue">0%</div></div>
+        </div>
+        <div class="feedback-wrap" id="feedbackText">Choose a motion, start recording, then compare live frames against it.</div>
+      </div>
+
+      <div class="card">
+        <div class="card-head"><h2>Rep timeline</h2></div>
+        <div class="rep-strip" id="repStrip"><span class="rep-empty">No reps yet.</span></div>
+      </div>
+    </div>
+  </div>
+
+  <div class="footer">Compare mode keeps the ESP32 bridge streaming while this page stays open.</div>
+</div>
+
+<script>
+const SIGNAL_KEYS=["roll","pitch","yaw","acc_x","acc_y","acc_z","gyro_x","gyro_y","gyro_z","acc_mag","gyro_mag"];
+const state={mode:"idle",recordTimer:null,compareTimer:null,recordState:null,compareState:null,motions:[]};
+const els={
+  modeDot:document.getElementById("modeDot"),modeText:document.getElementById("modeText"),
+  frameText:document.getElementById("frameText"),repText:document.getElementById("repText"),refText:document.getElementById("refText"),
+  scoreValue:document.getElementById("scoreValue"),scoreBar:document.getElementById("scoreBar"),
+  feedbackText:document.getElementById("feedbackText"),curveValue:document.getElementById("curveValue"),
+  amplitudeValue:document.getElementById("amplitudeValue"),progressValue:document.getElementById("progressValue"),
+  completedRepCount:document.getElementById("completedRepCount"),currentRepLabel:document.getElementById("currentRepLabel"),
+  repStrip:document.getElementById("repStrip"),recordName:document.getElementById("recordName"),
+  recordOrder:document.getElementById("recordOrder"),referenceSelect:document.getElementById("referenceSelect"),
+  compareOrder:document.getElementById("compareOrder"),signalSelect:document.getElementById("signalSelect"),
+  liveChart:document.getElementById("liveChart"),chartTitle:document.getElementById("chartTitle"),
+  chartLegend:document.getElementById("chartLegend"),motionList:document.getElementById("motionList"),
+  sessionMetrics:document.getElementById("sessionMetrics"),frameTable:document.getElementById("frameTable"),
+  repTable:document.getElementById("repTable"),startRecordBtn:document.getElementById("startRecordBtn"),
+  stopRecordBtn:document.getElementById("stopRecordBtn"),refreshRecordBtn:document.getElementById("refreshRecordBtn"),
+  startCompareBtn:document.getElementById("startCompareBtn"),stopCompareBtn:document.getElementById("stopCompareBtn"),
+  refreshCompareBtn:document.getElementById("refreshCompareBtn"),reloadMotionsBtn:document.getElementById("reloadMotionsBtn")
+};
+
+function clamp(v,a,b){return Math.max(a,Math.min(b,v))}
+const css=n=>getComputedStyle(document.documentElement).getPropertyValue(n).trim();
+
+async function fetchJson(url,opts){
+  const r=await fetch(url,opts);const t=await r.text();
+  let p={};try{p=JSON.parse(t)}catch(e){p={raw:t}}
+  if(!r.ok)throw new Error(p.detail||p.message||r.statusText);return p;
+}
+
+function setMode(mode){
+  state.mode=mode;
+  const map={idle:[css("--muted"),"Idle"],recording:[css("--teal"),"Recording"],comparing:[css("--amber"),"Comparing"]};
+  const[c,l]=map[mode]||map.idle;
+  els.modeDot.style.background=c;els.modeText.textContent=l;
+}
+
+function setScore(s){
+  const v=Number.isFinite(s)?clamp(s,0,100):0;
+  els.scoreValue.innerHTML=`${v.toFixed(0)}<span>/ 100</span>`;
+  els.scoreBar.style.width=v.toFixed(1)+"%";
+  els.scoreBar.style.background=v>=85?css("--teal"):v>=60?css("--amber"):css("--coral");
+}
+
+function scoreClass(t){
+  const n=(t||"").toLowerCase();
+  if(n.includes("great")||n.includes("excellent")||n.includes("good"))return"good";
+  if(n.includes("warning")||n.includes("acceptable")||n.includes("slight"))return"warn";
+  if(n.includes("needs")||n.includes("off")||n.includes("deviates"))return"bad";
+  return"";
+}
+
+function setFeedback(t){
+  els.feedbackText.textContent=t||"Waiting…";
+  els.feedbackText.className="feedback-wrap "+scoreClass(t);
+}
+
+function fv(v){
+  if(v==null||Number.isNaN(v))return"—";
+  if(Math.abs(v)>=1000)return v.toFixed(0);
+  if(Math.abs(v)>=100)return v.toFixed(1);
+  return v.toFixed(3);
+}
+
+function renderMetricCards(m){
+  const cards=[["Session",m.session],["Frames",m.frames],["Reference",m.reference],["Reps",m.reps],["Elapsed",m.elapsed],["Status",m.status]];
+  els.sessionMetrics.innerHTML=cards.map(([k,v])=>`<div class="metric"><div class="k">${k}</div><div class="v">${v??'—'}</div></div>`).join("");
+}
+
+function renderFrameTable(frame){
+  const e=frame?Object.entries(frame):[];
+  els.frameTable.innerHTML=e.length?e.map(([k,v])=>`<tr><td>${k}</td><td>${fv(v)}</td></tr>`).join(""):`<tr class="empty"><td colspan="2">No frame data.</td></tr>`;
+}
+
+function renderReps(reps){
+  els.repTable.innerHTML=reps&&reps.length?reps.map(r=>`<tr><td>${r.rep??'—'}</td><td>${fv(r.score)}</td><td>${fv(r.d_curve)}</td><td>${fv(r.delta_A)}</td><td>${r.feedback||'—'}</td></tr>`).join(""):`<tr class="empty"><td colspan="5">No completed reps.</td></tr>`;
+}
+
+function renderRepTimeline(reps,progress,active){
+  const completed=Array.isArray(reps)?reps:[];
+  const chips=completed.map(r=>{
+    const sc=Number.isFinite(r.score)?clamp(r.score,0,100):0;
+    return`<div class="rep-chip done"><div class="rep-top"><span class="rep-lbl">Rep ${r.rep??'—'}</span><span class="rep-meta">${sc.toFixed(0)}/100</span></div><div class="rep-note">${r.feedback||'Completed'}</div><div class="rep-bar"><div class="rep-bar-fill" style="width:${sc}%"></div></div></div>`;
+  });
+  if(active){
+    const p=clamp(Number(progress)||0,0,1);
+    chips.push(`<div class="rep-chip active"><div class="rep-top"><span class="rep-lbl">Rep ${completed.length+1}</span><span class="rep-meta">${Math.round(p*100)}%</span></div><div class="rep-note">In progress</div><div class="rep-bar"><div class="rep-bar-fill" style="width:${p*100}%"></div></div></div>`);
+  }
+  els.repStrip.innerHTML=chips.length?chips.join(""):`<span class="rep-empty">No reps yet.</span>`;
+}
+
+function renderMotionList(motions){
+  if(!motions||!motions.length){
+    els.motionList.innerHTML=`<div class="motion-item"><div><strong>No saved motions</strong><small>Record a reference to populate this list.</small></div></div>`;
+    els.referenceSelect.innerHTML=`<option value="">No saved motions</option>`;return;
+  }
+  els.motionList.innerHTML=motions.map(m=>`<div class="motion-item"><div><strong>${m.name}</strong><small>${m.n_frames??'?'} frames · ${m.n_reps_in_reference??'?'} reference reps</small></div><div class="motion-actions"><button class="btn-ghost btn-sm" data-load="${m.name}">Use</button><button class="btn-stop btn-sm" data-del="${m.name}">Delete</button></div></div>`).join("");
+  els.referenceSelect.innerHTML=motions.map(m=>`<option value="${m.name}">${m.name}</option>`).join("");
+  els.motionList.querySelectorAll("[data-load]").forEach(b=>{b.addEventListener("click",()=>{els.referenceSelect.value=b.dataset.load;setFeedback(`Reference: ${els.referenceSelect.value}`);updateStaticViews();});});
+  els.motionList.querySelectorAll("[data-del]").forEach(b=>{b.addEventListener("click",async()=>{const n=b.dataset.del;if(!n||!confirm(`Delete ${n}?`))return;await fetchJson(`/motions/${encodeURIComponent(n)}`,{method:"DELETE"});await refreshMotions();});});
+  if(!els.referenceSelect.value&&motions.length)els.referenceSelect.value=motions[0].name;
+}
+
+function resizeCanvas(c){
+  const dpr=window.devicePixelRatio||1,rect=c.getBoundingClientRect();
+  const w=Math.max(300,Math.floor(rect.width*dpr)),h=Math.max(140,Math.floor(rect.height*dpr));
+  if(c.width!==w||c.height!==h){c.width=w;c.height=h;}return{w,h,dpr};
+}
+
+function drawChart(canvas,sig,liveSig,refSig){
+  const ctx=canvas.getContext("2d");const{w,h,dpr}=resizeCanvas(canvas);
+  const pad=28*dpr;ctx.clearRect(0,0,w,h);
+  const live=(liveSig&&liveSig[sig])?liveSig[sig].slice():[];
+  const ref=(refSig&&refSig[sig])?refSig[sig].slice():[];
+  const all=[...live,...ref];
+  const minR=all.length?Math.min(...all):-1,maxR=all.length?Math.max(...all):1;
+  const range=Math.max(1e-6,maxR-minR);
+  const min=minR-range*0.06,max=maxR+range*0.06;
+  const pw=w-pad*2,ph=h-pad*2;
+  ctx.save();ctx.translate(0.5,0.5);
+  ctx.strokeStyle="rgba(255,255,255,0.04)";ctx.lineWidth=dpr;
+  for(let i=0;i<=4;i++){const y=pad+(ph/4)*i;ctx.beginPath();ctx.moveTo(pad,y);ctx.lineTo(w-pad,y);ctx.stroke();}
+  const mx=(i,n)=>n<=1?pad:pad+(i/(n-1))*pw;
+  const my=v=>h-pad-((v-min)/(max-min))*ph;
+  function line(vals,color,lw){
+    if(!vals||vals.length<2)return;
+    ctx.strokeStyle=color;ctx.lineWidth=lw*dpr;ctx.lineJoin="round";ctx.beginPath();
+    vals.forEach((v,i)=>{i===0?ctx.moveTo(mx(i,vals.length),my(v)):ctx.lineTo(mx(i,vals.length),my(v));});ctx.stroke();
+  }
+  line(ref,"rgba(201,165,93,0.55)",1.5);
+  line(live,"rgba(93,201,176,0.9)",1.5);
+  ctx.fillStyle="rgba(99,109,126,0.6)";
+  ctx.font=`${10*dpr}px SFMono-Regular,Consolas,monospace`;
+  ctx.fillText(`${sig}  ·  live ${live.length}${ref.length?`  ·  ref ${ref.length}`:''}`,pad,h-7*dpr);
+  ctx.restore();
+}
+
+function updateLegend(hasRef){
+  const sig=els.signalSelect.value;
+  els.chartLegend.innerHTML=hasRef?`<span class="leg-item"><span class="leg-sw" style="background:var(--teal)"></span>live ${sig}</span><span class="leg-item"><span class="leg-sw" style="background:var(--amber)"></span>ref ${sig}</span>`:`<span class="leg-item"><span class="leg-sw" style="background:var(--teal)"></span>live ${sig}</span>`;
+}
+
+function updateStaticViews(){
+  const hasC=!!(state.compareState&&state.compareState.active);
+  const hasR=!!(state.recordState&&state.recordState.active);
+  setMode(hasC?"comparing":hasR?"recording":"idle");
+  const sig=els.signalSelect.value;
+  els.chartTitle.textContent=hasC?"Comparison stream":hasR?"Recording stream":"Signal preview";
+  updateLegend(hasC);
+  drawChart(els.liveChart,sig,hasC?state.compareState.live_signals:(state.recordState?state.recordState.signals:null),hasC?state.compareState.reference_signals:null);
+  const sess=hasC?state.compareState:state.recordState;
+  const frames=sess?(sess.frames_count??0):0;
+  const reps=hasC?(state.compareState.reps_detected??0):hasR?(state.recordState.reps_detected??0):0;
+  const reference=hasC?(state.compareState.reference_name||"none"):hasR?(state.recordState.motion_name||"none"):"none";
+  const elapsed=sess?((sess.elapsed_seconds??0).toFixed(1)+"s"):"0.0s";
+  renderMetricCards({session:hasC?"compare":hasR?"record":"idle",frames,reference,reps,elapsed,status:hasC?"Active":hasR?"Recording":"Idle"});
+  els.frameText.textContent=`${frames} frame${frames===1?"":"s"}`;
+  els.repText.textContent=`${reps} rep${reps===1?"":"s"}`;
+  els.refText.textContent=hasC?`Ref: ${reference}`:hasR?`Rec: ${reference}`:"No reference";
+  els.completedRepCount.textContent=hasC?String(state.compareState.completed_reps?.length??0):"0";
+  if(hasC){const comp=state.compareState.completed_reps||[];const prog=Math.round((state.compareState.current_rep_progress||0)*100);els.currentRepLabel.textContent=`Rep ${comp.length+1} (${prog}%)`;}
+  else{els.currentRepLabel.textContent=hasR?"Recording":"—";}
+  renderFrameTable(hasC?state.compareState.last_frame:hasR?state.recordState.last_frame:null);
+  if(hasC){
+    const comp=state.compareState.completed_reps||[];
+    renderReps(comp);renderRepTimeline(comp,state.compareState.current_rep_progress||0,true);
+    setScore(state.compareState.score||0);setFeedback(state.compareState.feedback||"Waiting…");
+    els.curveValue.textContent=fv(state.compareState.last_rep_curve_distance);
+    els.amplitudeValue.textContent=fv(state.compareState.last_rep_amplitude_diff);
+    els.progressValue.textContent=`${Math.round((state.compareState.current_rep_progress||0)*100)}%`;
+  }else if(hasR){
+    renderReps([]);renderRepTimeline([],0,false);setScore(0);
+    setFeedback(state.recordState.status_text||"Recording…");
+    els.curveValue.textContent="—";els.amplitudeValue.textContent="—";els.progressValue.textContent="0%";
+  }else{
+    renderReps([]);renderRepTimeline([],0,false);setScore(0);
+    setFeedback("Choose a motion, start recording, then compare live frames against it.");
+    els.curveValue.textContent="—";els.amplitudeValue.textContent="—";els.progressValue.textContent="0%";
+  }
+}
+
+async function refreshMotions(){
+  const p=await fetchJson("/motions");const motions=(p.motions||[]).map(n=>({name:n}));state.motions=motions;
+  const details=await Promise.all(motions.map(async({name})=>{try{return await fetchJson(`/motions/${encodeURIComponent(name)}`);}catch(e){return{name,n_frames:"?",n_reps_in_reference:"?"};}  }));
+  renderMotionList(details);if(details.length&&!els.referenceSelect.value)els.referenceSelect.value=details[0].name;updateStaticViews();
+}
+
+async function refreshRecordState(){
+  try{
+    const p=await fetchJson("/record/state");state.recordState=p;
+    if(p.active){state.compareState=null;setMode("recording");els.stopRecordBtn.disabled=false;els.startRecordBtn.disabled=true;els.stopCompareBtn.disabled=true;els.startCompareBtn.disabled=true;els.recordName.value=p.motion_name||els.recordName.value;els.recordOrder.value=p.bezier_order??els.recordOrder.value;}
+    else if(!state.compareState?.active){setMode("idle");els.stopRecordBtn.disabled=true;els.startRecordBtn.disabled=false;els.startCompareBtn.disabled=!els.referenceSelect.value;els.stopCompareBtn.disabled=true;}
+  }catch(e){state.recordState={active:false,frames_count:0,last_frame:null,signals:{},status_text:e.message};}
+  updateStaticViews();
+}
+
+async function refreshCompareState(){
+  try{
+    const p=await fetchJson("/compare/state");state.compareState=p;
+    if(p.active){state.recordState=null;setMode("comparing");els.stopCompareBtn.disabled=false;els.startCompareBtn.disabled=true;els.stopRecordBtn.disabled=true;els.startRecordBtn.disabled=true;els.referenceSelect.value=p.reference_name||els.referenceSelect.value;els.compareOrder.value=p.bezier_order??els.compareOrder.value;if(typeof p.score==="number")setScore(p.score);}
+    else if(!state.recordState?.active){setMode("idle");els.stopCompareBtn.disabled=true;els.startCompareBtn.disabled=!els.referenceSelect.value;els.startRecordBtn.disabled=false;els.stopRecordBtn.disabled=true;}
+  }catch(e){state.compareState={active:false,frames_count:0,completed_reps:[],live_signals:{},reference_signals:{},score:0,feedback:e.message};}
+  updateStaticViews();
+}
+
+function startTimer(n,fn,ms){stopTimer(n);state[n]=setInterval(fn,ms);}
+function stopTimer(n){if(state[n]){clearInterval(state[n]);state[n]=null;}}
+
+async function startRecording(){
+  const motion_name=els.recordName.value.trim();if(!motion_name){alert("Enter a motion name.");return;}
+  await fetchJson("/record/start",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({motion_name})});
+  state.recordState={active:true,motion_name,bezier_order:Number(els.recordOrder.value||8),frames_count:0,last_frame:null,signals:{},status_text:"Recording…"};
+  state.compareState=null;els.stopRecordBtn.disabled=false;els.startRecordBtn.disabled=true;els.startCompareBtn.disabled=true;
+  setMode("recording");updateStaticViews();startTimer("recordTimer",refreshRecordState,350);stopTimer("compareTimer");
+}
+
+async function stopRecording(){
+  const p=await fetchJson(`/record/stop?bezier_order=${encodeURIComponent(Number(els.recordOrder.value||8))}`,{method:"POST"});
+  state.recordState=null;els.stopRecordBtn.disabled=true;els.startRecordBtn.disabled=false;
+  els.startCompareBtn.disabled=!els.referenceSelect.value;stopTimer("recordTimer");
+  await refreshMotions();setFeedback(`Saved as ${p.motion_name}. ${p.reps_detected} reps from ${p.n_frames} frames.`);
+  setMode("idle");updateStaticViews();
+}
+
+async function startComparison(){
+  const reference_name=els.referenceSelect.value;if(!reference_name){alert("Choose a saved motion.");return;}
+  await fetchJson("/compare/start",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({reference_name,bezier_order:Number(els.compareOrder.value||8)})});
+  state.compareState={active:true,reference_name,bezier_order:Number(els.compareOrder.value||8),frames_count:0,reps_detected:0,current_rep_progress:0,last_rep_curve_distance:0,last_rep_amplitude_diff:0,live_signals:{},reference_signals:{},completed_reps:[],score:0,feedback:"Comparison started…"};
+  state.recordState=null;els.stopCompareBtn.disabled=false;els.startCompareBtn.disabled=true;els.startRecordBtn.disabled=true;
+  setMode("comparing");updateStaticViews();startTimer("compareTimer",refreshCompareState,350);stopTimer("recordTimer");
+}
+
+async function stopComparison(){
+  const p=await fetchJson("/compare/stop",{method:"POST"});
+  state.compareState=null;els.stopCompareBtn.disabled=true;els.startCompareBtn.disabled=!els.referenceSelect.value;els.startRecordBtn.disabled=false;
+  stopTimer("compareTimer");setFeedback(p.overall_feedback||"Comparison stopped.");setScore(p.avg_score||0);
+  renderReps(p.reps||[]);setMode("idle");updateStaticViews();
+}
+
+function wireEvents(){
+  els.startRecordBtn.addEventListener("click",()=>startRecording().catch(e=>alert(e.message)));
+  els.stopRecordBtn.addEventListener("click",()=>stopRecording().catch(e=>alert(e.message)));
+  els.startCompareBtn.addEventListener("click",()=>startComparison().catch(e=>alert(e.message)));
+  els.stopCompareBtn.addEventListener("click",()=>stopComparison().catch(e=>alert(e.message)));
+  els.refreshRecordBtn.addEventListener("click",()=>refreshRecordState().catch(e=>alert(e.message)));
+  els.refreshCompareBtn.addEventListener("click",()=>refreshCompareState().catch(e=>alert(e.message)));
+  els.reloadMotionsBtn.addEventListener("click",()=>refreshMotions().catch(e=>alert(e.message)));
+  els.referenceSelect.addEventListener("change",()=>{els.startCompareBtn.disabled=!els.referenceSelect.value;updateStaticViews();});
+  els.signalSelect.addEventListener("change",updateStaticViews);
+  window.addEventListener("resize",updateStaticViews);
+}
+
+async function init(){
+  wireEvents();
+  els.startCompareBtn.disabled=true;els.stopRecordBtn.disabled=true;els.stopCompareBtn.disabled=true;
+  await refreshMotions();await Promise.all([refreshRecordState(),refreshCompareState()]);
+  setInterval(refreshRecordState,400);setInterval(refreshCompareState,400);
+  updateStaticViews();
+}
+
+init().catch(e=>{setFeedback(`Init failed: ${e.message}`);console.error(e);});
+</script>
+</body>
+</html>
