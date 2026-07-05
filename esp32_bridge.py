@@ -9,6 +9,22 @@ import serial
 BASE_URL = "http://localhost:8000"
 BAUD = 115200
 
+# Matches the firmware's periodic status line, e.g.:
+# LINK main_connected=1 state=ready uptime_ms=123456
+LINK_RE = re.compile(r"^LINK\s+main_connected=(\d)\s+state=(\w+)")
+
+
+def parse_link_line(line: str) -> dict | None:
+    """If `line` is a LINK status line, return a link-status payload, else None."""
+    m = LINK_RE.search(line.strip())
+    if not m:
+        return None
+    return {
+        "secondary_connected": True,  # we're reading this line over serial, so it's alive
+        "main_connected": bool(int(m.group(1))),
+        "state": m.group(2),
+    }
+
 
 def parse_line(line: str, buf: dict) -> bool:
     # returns true when all fields are filled
@@ -46,6 +62,15 @@ def parse_line(line: str, buf: dict) -> bool:
     return required.issubset(buf)
 
 
+async def post_link_status(status: dict, base_url: str, client: httpx.AsyncClient):
+    payload = dict(status)
+    payload["timestamp"] = time.time()
+    try:
+        await client.post(f"{base_url.rstrip('/')}/link/status", json=payload, timeout=1.0)
+    except Exception as e:
+        print(f"  [warn] link status post failed: {e}")
+ 
+
 async def post_frame(buf: dict, endpoint: str, client: httpx.AsyncClient):
     payload = dict(buf)
     payload["timestamp"] = time.time()
@@ -76,12 +101,26 @@ async def run(port: str, name: str, bezier_order: int = 8,
     async with httpx.AsyncClient(timeout=1.0) as client:
         try:
             with serial.Serial(port, baud, timeout=2) as ser:
+                # As soon as the port opens we know the secondary band is talking to us,
+                # but we don't yet know the state of its BLE link to the main band.
+                await post_link_status(
+                    {"secondary_connected": True, "main_connected": False, "state": "unknown"},
+                    base_url, client,
+                )
                 while True:
                     line = ser.readline().decode("utf-8", errors="ignore")
                     if not line:
                         continue
                     if debug:
                         print(f"[{frame_count}] {line.rstrip()}")
+ 
+                    link = parse_link_line(line)
+                    if link is not None:
+                        await post_link_status(link, base_url, client)
+                        if debug:
+                            print(f"  [link] {link}")
+                        continue
+                    
                     ready = parse_line(line, buf)
                     if ready:
                         resp = await post_frame(buf, endpoint_url, client)
@@ -91,6 +130,15 @@ async def run(port: str, name: str, bezier_order: int = 8,
                         buf = {}  # reset for next triplet
         except KeyboardInterrupt:
             print("\nStopping…")
+        except serial.SerialException as e:
+            print(f"\nSerial error: {e}")
+        finally:
+            # Bridge is going down: we can no longer vouch for either band, so tell
+            # the backend both are unreachable instead of leaving stale "connected" state.
+            await post_link_status(
+                {"secondary_connected": False, "main_connected": False, "state": "bridge_stopped"},
+                base_url, client,
+            )
 
 
 if __name__ == "__main__":

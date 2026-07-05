@@ -144,6 +144,8 @@ td{color:var(--text);font-variant-numeric:tabular-nums}
     <p>Record a reference motion, then stream incoming frames to compare and score each repetition in real time.</p>
     <div class="status-row">
       <span class="tag"><span class="dot" id="modeDot"></span><span id="modeText">Idle</span></span>
+      <span class="tag"><span class="dot" id="mainBandDot"></span><span id="mainBandText">Main band: unknown</span></span>
+      <span class="tag"><span class="dot" id="secBandDot"></span><span id="secBandText">Secondary band: unknown</span></span>
       <span class="tag"><span class="dot indigo"></span><span id="frameText">0 frames</span></span>
       <span class="tag"><span class="dot" id="repDotTag"></span><span id="repText">0 reps</span></span>
       <span class="tag"><span id="refText">No reference</span></span>
@@ -265,6 +267,8 @@ const SIGNAL_KEYS=["roll","pitch","yaw","acc_x","acc_y","acc_z","gyro_x","gyro_y
 const state={mode:"idle",recordTimer:null,compareTimer:null,recordState:null,compareState:null,motions:[]};
 const els={
   modeDot:document.getElementById("modeDot"),modeText:document.getElementById("modeText"),
+  mainBandDot:document.getElementById("mainBandDot"),mainBandText:document.getElementById("mainBandText"),
+  secBandDot:document.getElementById("secBandDot"),secBandText:document.getElementById("secBandText"),
   frameText:document.getElementById("frameText"),repText:document.getElementById("repText"),refText:document.getElementById("refText"),
   scoreValue:document.getElementById("scoreValue"),scoreBar:document.getElementById("scoreBar"),
   feedbackText:document.getElementById("feedbackText"),curveValue:document.getElementById("curveValue"),
@@ -442,6 +446,22 @@ function updateStaticViews(){
   }
 }
 
+function setBandDot(dotEl,textEl,label,connected,stale){
+  dotEl.className="dot "+(stale?"amber":connected?"teal":"");
+  textEl.textContent=`${label}: ${stale?"unknown":connected?"connected":"disconnected"}`;
+}
+
+async function refreshLinkStatus(){
+  try{
+    const p=await fetchJson("/link/status");
+    setBandDot(els.mainBandDot,els.mainBandText,"Main band",p.main_connected,p.stale);
+    setBandDot(els.secBandDot,els.secBandText,"Secondary band",p.secondary_connected,p.stale);
+  }catch(e){
+    setBandDot(els.mainBandDot,els.mainBandText,"Main band",false,true);
+    setBandDot(els.secBandDot,els.secBandText,"Secondary band",false,true);
+  }
+}
+
 async function refreshMotions(){
   const p=await fetchJson("/motions");const motions=(p.motions||[]).map(n=>({name:n}));state.motions=motions;
   const details=await Promise.all(motions.map(async({name})=>{try{return await fetchJson(`/motions/${encodeURIComponent(name)}`);}catch(e){return{name,n_frames:"?",n_reps_in_reference:"?"};}  }));
@@ -516,8 +536,8 @@ function wireEvents(){
 async function init(){
   wireEvents();
   els.startCompareBtn.disabled=true;els.stopRecordBtn.disabled=true;els.stopCompareBtn.disabled=true;
-  await refreshMotions();await Promise.all([refreshRecordState(),refreshCompareState()]);
-  setInterval(refreshRecordState,400);setInterval(refreshCompareState,400);
+  await refreshMotions();await Promise.all([refreshRecordState(),refreshCompareState(),refreshLinkStatus()]);
+  setInterval(refreshRecordState,400);setInterval(refreshCompareState,400);setInterval(refreshLinkStatus,1000);
   updateStaticViews();
 }
 

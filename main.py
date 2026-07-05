@@ -26,6 +26,28 @@ _compare_session: dict = {}
 UI_SIGNAL_WINDOW = 200
 COMPARE_ANALYSIS_WINDOW = 240
 
+# Band connection tracking.
+# The backend never talks to either ESP32 directly — the secondary band is
+# wired over USB to esp32_bridge.py, which relays a periodic "LINK" line
+# from the firmware here. secondary_connected means "the bridge is alive
+# and reading from the secondary band"; main_connected means "the secondary
+# band's BLE link to the main band is currently up".
+_link_state: dict = {
+    "secondary_connected": False,
+    "main_connected": False,
+    "state": "unknown",
+    "last_update": None,
+}
+LINK_STALE_SECONDS = 5.0  # if the bridge hasn't posted in this long, treat as unknown/offline
+ 
+ 
+class LinkStatus(BaseModel):
+    secondary_connected: bool
+    main_connected: bool
+    state: str = "unknown"
+    timestamp: Optional[float] = None
+
+
 # column layout of the 9-dim state vector
 # [roll, pitch, yaw, acc_x, acc_y, acc_z, gyro_x, gyro_y, gyro_z]
 COMPARE_INDICES = [0, 1, 3, 4, 5, 6, 7, 8]   # drops col-2 (yaw, always 0)
@@ -845,6 +867,32 @@ def compare_state():
     }
 
 
+# Band connection status 
+ 
+@app.post("/link/status")
+def update_link_status(status: LinkStatus):
+    _link_state.update({
+        "secondary_connected": status.secondary_connected,
+        "main_connected": status.main_connected,
+        "state": status.state,
+        "last_update": status.timestamp or time.time(),
+    })
+    return {"ok": True}
+ 
+ 
+@app.get("/link/status")
+def get_link_status():
+    last = _link_state.get("last_update")
+    stale = last is None or (time.time() - last) > LINK_STALE_SECONDS
+    return {
+        "secondary_connected": bool(_link_state["secondary_connected"]) and not stale,
+        "main_connected": bool(_link_state["main_connected"]) and not stale,
+        "state": _link_state.get("state", "unknown"),
+        "stale": stale,
+        "last_update": last,
+    }
+ 
+ 
 # Health / UI 
 
 @app.get("/health")
