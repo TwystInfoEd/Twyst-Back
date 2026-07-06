@@ -12,6 +12,7 @@ BAUD = 115200
 # Matches the firmware's periodic status line, e.g.:
 # LINK main_connected=1 state=ready uptime_ms=123456
 LINK_RE = re.compile(r"^LINK\s+main_connected=(\d)\s+state=(\w+)")
+NUM_RE = r"[-+]?(?:\d+(?:\.\d*)?|\.\d+)"
 
 
 def parse_link_line(line: str) -> dict | None:
@@ -32,7 +33,7 @@ def parse_line(line: str, buf: dict) -> bool:
 
     # generic key:value parser for single-line firmware output like:
     # acc_x:-1.770 acc_y:-0.240 acc_z:10.181 gyro_x:3.427 gyro_y:-0.924 gyro_z:-0.145 roll:-1.35 pitch:9.86 yaw:0.00
-    for m in re.finditer(r"([a-zA-Z_]+)\s*[:=]\s*([\-\d.]+)", line):
+    for m in re.finditer(rf"([a-zA-Z_]+)\s*[:=]\s*({NUM_RE})", line):
         key = m.group(1)
         try:
             val = float(m.group(2))
@@ -44,15 +45,15 @@ def parse_line(line: str, buf: dict) -> bool:
             buf[key] = val
 
     # fallback: also accept the older multi-line / labelled formats
-    m = re.search(r"Proc Acc\[g\]:\s*([\-\d.]+),\s*([\-\d.]+),\s*([\-\d.]+)", line)
+    m = re.search(rf"Proc Acc\[g\]:\s*({NUM_RE}),\s*({NUM_RE}),\s*({NUM_RE})", line)
     if m:
         buf["acc_x"], buf["acc_y"], buf["acc_z"] = map(float, m.groups())
 
-    m = re.search(r"Proc Gyro\[deg/s\]:\s*([\-\d.]+),\s*([\-\d.]+),\s*([\-\d.]+)", line)
+    m = re.search(rf"Proc Gyro\[deg/s\]:\s*({NUM_RE}),\s*({NUM_RE}),\s*({NUM_RE})", line)
     if m:
         buf["gyro_x"], buf["gyro_y"], buf["gyro_z"] = map(float, m.groups())
 
-    m = re.search(r"Angles \[deg\] R/P/Y:\s*([\-\d.]+),\s*([\-\d.]+),\s*([\-\d.]+)", line)
+    m = re.search(rf"Angles \[deg\] R/P/Y:\s*({NUM_RE}),\s*({NUM_RE}),\s*({NUM_RE})", line)
     if m:
         buf["roll"], buf["pitch"], buf["yaw"] = map(float, m.groups())
 
