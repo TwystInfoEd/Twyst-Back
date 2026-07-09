@@ -15,7 +15,7 @@ from scipy.special import comb
 DATA_DIR = Path("twyst_data")
 DATA_DIR.mkdir(exist_ok=True)
 
-app = FastAPI(title="Twyst Backend", version="0.3.0")
+app = FastAPI(title="Twyst Backend", version="0.4.0")
 app.add_middleware(
     CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"]
 )
@@ -39,8 +39,8 @@ _link_state: dict = {
     "last_update": None,
 }
 LINK_STALE_SECONDS = 5.0  # if the bridge hasn't posted in this long, treat as unknown/offline
- 
- 
+
+
 class LinkStatus(BaseModel):
     secondary_connected: bool
     main_connected: bool
@@ -48,9 +48,27 @@ class LinkStatus(BaseModel):
     timestamp: Optional[float] = None
 
 
-# column layout of the 9-dim state vector
+# column layout of the single-band 9-dim state vector
 # [roll, pitch, yaw, acc_x, acc_y, acc_z, gyro_x, gyro_y, gyro_z]
 COMPARE_INDICES = [0, 1, 3, 4, 5, 6, 7, 8]   # drops col-2 (yaw, always 0)
+
+# column layout of the dual-band combined 18-dim state vector:
+# secondary band's 9 columns, then the main band's 9 columns (prefixed m_)
+DUAL_COLUMNS = [
+    "roll", "pitch", "yaw", "acc_x", "acc_y", "acc_z", "gyro_x", "gyro_y", "gyro_z",
+    "m_roll", "m_pitch", "m_yaw", "m_acc_x", "m_acc_y", "m_acc_z", "m_gyro_x", "m_gyro_y", "m_gyro_z",
+]
+# drops col-2 (yaw) and col-11 (m_yaw) — both are always 0 on this hardware
+COMPARE_INDICES_DUAL = [0, 1, 3, 4, 5, 6, 7, 8, 9, 10, 12, 13, 14, 15, 16, 17]
+
+MAIN_FRAME_BUFFER_MAX = 500
+
+# Live buffer + zero-order-hold cache for the main band's own stream. This is
+# independent of record/compare sessions so the main-band signal preview
+# always works, and it's also what dual-mode sessions merge into secondary
+# frames as they arrive.
+_main_frame_buffer: list[dict] = []
+_latest_main_frame: Optional[dict] = None
 
 
 # pydantic models
@@ -70,11 +88,15 @@ class IMUFrame(BaseModel):
 
 class RecordStartRequest(BaseModel):
     motion_name: str
+    mode: str = "single"  # "single" (secondary band only) or "dual" (secondary + main, combined)
 
 
 class CompareStartRequest(BaseModel):
     reference_name: str
     bezier_order: int = 8
+    # mode is intentionally NOT accepted here — it's read from the saved
+    # reference itself, so a live session can never mismatch its reference's
+    # dimensionality.
 
 
 class CompareFrameResponse(BaseModel):
@@ -98,9 +120,36 @@ def frames_to_state_matrix(frames: list[dict]) -> np.ndarray:
     return np.array(rows, dtype=float)
 
 
-def extract_compare_slice(X: np.ndarray) -> np.ndarray:
-    """Drop yaw column (always 0 on MPU9265). Returns (T, 8)."""
-    return X[:, COMPARE_INDICES]
+def frames_to_state_matrix_dual(frames: list[dict]) -> np.ndarray:
+    """Returns X (T, 18): secondary band's 9 columns, then main band's 9 (m_ prefixed)."""
+    rows = [[f.get(c, 0.0) for c in DUAL_COLUMNS] for f in frames]
+    return np.array(rows, dtype=float)
+
+
+def combine_with_main(f: dict) -> dict:
+    """
+    Merge a secondary-band frame with the most recently seen main-band frame
+    (zero-order hold — main band only reports every ~75ms, secondary faster)
+    into a combined dict carrying both bands' keys. Used for dual-mode
+    sessions only; single-mode sessions never call this.
+    """
+    combined = dict(f)
+    m = _latest_main_frame or {}
+    combined["m_acc_x"] = m.get("acc_x", 0.0)
+    combined["m_acc_y"] = m.get("acc_y", 0.0)
+    combined["m_acc_z"] = m.get("acc_z", 1.0)
+    combined["m_gyro_x"] = m.get("gyro_x", 0.0)
+    combined["m_gyro_y"] = m.get("gyro_y", 0.0)
+    combined["m_gyro_z"] = m.get("gyro_z", 0.0)
+    combined["m_roll"] = m.get("roll", 0.0)
+    combined["m_pitch"] = m.get("pitch", 0.0)
+    combined["m_yaw"] = m.get("yaw", 0.0)
+    return combined
+
+
+def extract_compare_slice(X: np.ndarray, indices: list[int]) -> np.ndarray:
+    """Drop yaw column(s) (always 0 on this hardware). indices selects which columns to keep."""
+    return X[:, indices]
 
 
 def zscore_normalise(X: np.ndarray) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
@@ -120,6 +169,7 @@ def zscore_normalise(X: np.ndarray) -> tuple[np.ndarray, np.ndarray, np.ndarray]
 def pca_first_component(X: np.ndarray) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
     """
     Z-score normalise then SVD → first PC projection z1 and the PCA component vector.
+    Works for any column count (9-dim single-band or 18-dim dual-band).
     Returns: (z1, V1, mu, sigma) where:
       - z1: Projection onto first PC, shape (T,)
       - V1: First principal component vector (for reuse during comparison)
@@ -228,7 +278,8 @@ def bernstein_matrix(n_points: int, order: int) -> np.ndarray:
 def fit_bezier(segment: np.ndarray, order: int = 8,
                lam: float = 1e-4) -> np.ndarray:
     """
-    Fit a Bézier curve to `segment` (T_j, D).
+    Fit a Bézier curve to `segment` (T_j, D). Works for any D (8-dim
+    single-band or 16-dim dual-band compare vectors).
     The data is z-score normalised inside this function so that different
     physical units (degrees, g, deg/s) sit on an equal scale.  Control
     points are returned in the normalised space; comparison also happens
@@ -300,6 +351,9 @@ def reference_amplitude(P_ref: np.ndarray, n: int = 200) -> float:
 def dominant_angle_axis(X: np.ndarray) -> str:
     """
     Which of roll/pitch/yaw carries the most range in this recording?
+    Always reads the SECONDARY band's angle columns (0, 1, 2) — even in dual
+    mode, direction detection is based on the secondary band only, since
+    that's the band that's always present in both modes.
     For a correct bicep curl (wrist band, arm curling up-down) this should
     be 'roll' or 'pitch' depending on how the band is oriented.
     If the user swings the arm sideways instead, 'yaw' will dominate.
@@ -396,7 +450,7 @@ def feedback_from_metrics(d_curve: float, delta_A: float,
     return (" ! " + "; ".join(hints)) if hints else "Acceptable form."
 
 
-# UI signal helpers 
+# UI signal helpers — single-band (9-dim) 
 
 def frame_signals_from_matrix(X: np.ndarray) -> dict[str, list[float]]:
     empty: list[float] = []
@@ -421,10 +475,32 @@ def frame_signals_from_frames(frames: list[dict],
     return frame_signals_from_matrix(frames_to_state_matrix(frames[-limit:]))
 
 
+# UI signal helpers — dual-band (18-dim) 
+
+def frame_signals_from_matrix_dual(X: np.ndarray) -> dict[str, list[float]]:
+    all_keys = DUAL_COLUMNS + ["acc_mag", "gyro_mag", "m_acc_mag", "m_gyro_mag"]
+    if X.size == 0:
+        return {k: [] for k in all_keys}
+    out: dict[str, list[float]] = {n: X[:, i].tolist() for i, n in enumerate(DUAL_COLUMNS)}
+    out["acc_mag"]    = np.linalg.norm(X[:, 3:6], axis=1).tolist()
+    out["gyro_mag"]   = np.linalg.norm(X[:, 6:9], axis=1).tolist()
+    out["m_acc_mag"]  = np.linalg.norm(X[:, 12:15], axis=1).tolist()
+    out["m_gyro_mag"] = np.linalg.norm(X[:, 15:18], axis=1).tolist()
+    return out
+
+
+def frame_signals_from_frames_dual(frames: list[dict],
+                                    limit: int = UI_SIGNAL_WINDOW
+                                    ) -> dict[str, list[float]]:
+    if not frames:
+        return frame_signals_from_matrix_dual(np.empty((0, 18)))
+    return frame_signals_from_matrix_dual(frames_to_state_matrix_dual(frames[-limit:]))
+
+
 def resample_state_matrix(X: np.ndarray, n: int = UI_SIGNAL_WINDOW) -> np.ndarray:
-    """Linearly resample a state matrix to n samples for UI display."""
+    """Linearly resample a state matrix to n samples for UI display. Column-count agnostic."""
     if X is None or len(X) == 0:
-        return np.empty((0, 9))
+        return np.empty((0, X.shape[1] if X is not None and X.ndim == 2 else 9))
     if len(X) == 1:
         return np.repeat(X, n, axis=0)
 
@@ -442,6 +518,12 @@ def frame_signals_from_resampled_matrix(X: np.ndarray,
     return frame_signals_from_matrix(resample_state_matrix(X, n=n))
 
 
+def frame_signals_from_resampled_matrix_dual(X: np.ndarray,
+                                             n: int = UI_SIGNAL_WINDOW
+                                             ) -> dict[str, list[float]]:
+    return frame_signals_from_matrix_dual(resample_state_matrix(X, n=n))
+
+
 def frame_signals_from_control_points(cp: np.ndarray,
                                        n: int = UI_SIGNAL_WINDOW
                                        ) -> dict[str, list[float]]:
@@ -453,6 +535,19 @@ def frame_signals_from_control_points(cp: np.ndarray,
     for j, src_col in enumerate(COMPARE_INDICES):
         full[:, src_col] = curve[:, j]
     return frame_signals_from_matrix(full)
+
+
+def frame_signals_from_control_points_dual(cp: np.ndarray,
+                                            n: int = UI_SIGNAL_WINDOW
+                                            ) -> dict[str, list[float]]:
+    """Evaluate reference Bézier (normalised space) and rebuild full 18-col matrix."""
+    if cp is None or len(cp) == 0:
+        return frame_signals_from_matrix_dual(np.empty((0, 18)))
+    curve = eval_bezier(cp, n=n)   # (n, 16) — normalised, both yaws absent
+    full = np.zeros((n, 18))
+    for j, src_col in enumerate(COMPARE_INDICES_DUAL):
+        full[:, src_col] = curve[:, j]
+    return frame_signals_from_matrix_dual(full)
 
 
 # persistence
@@ -490,6 +585,7 @@ def load_motion(name: str) -> dict:
         data["pca_mu"] = np.array(data["pca_mu"])
     if "pca_sigma" in data:
         data["pca_sigma"] = np.array(data["pca_sigma"])
+    data.setdefault("mode", "single")  # old files predate dual mode
     return data
 
 
@@ -501,37 +597,76 @@ def list_motions() -> list[str]:
 
 @app.post("/record/start")
 def record_start(req: RecordStartRequest):
+    if req.mode not in ("single", "dual"):
+        raise HTTPException(400, "mode must be 'single' or 'dual'")
     _record_session.clear()
     _record_session.update({
         "name": req.motion_name,
+        "mode": req.mode,
         "frames": [],
         "started_at": time.time(),
     })
-    return {"status": "recording", "motion_name": req.motion_name}
+    return {"status": "recording", "motion_name": req.motion_name, "mode": req.mode}
 
 
 @app.post("/frame")
 def handle_frame(frame: IMUFrame):
-    """Unified frame endpoint — routes to the active session automatically."""
+    """Unified frame endpoint for the SECONDARY band — routes to the active
+    session automatically. In dual mode, each frame is merged with the most
+    recently seen main-band frame before being stored/analysed."""
     f = frame.model_dump()
     f["timestamp"] = f["timestamp"] or time.time()
 
     if _record_session:
-        _record_session["frames"].append(f)
+        stored = combine_with_main(f) if _record_session.get("mode") == "dual" else f
+        _record_session["frames"].append(stored)
         return {"mode": "recording",
                 "frames_collected": len(_record_session["frames"])}
 
     if _compare_session:
-        return _process_compare_frame(f)
+        stored = combine_with_main(f) if _compare_session.get("mode") == "dual" else f
+        return _process_compare_frame(stored)
 
     raise HTTPException(400,
         "No active session. Call /record/start or /compare/start first.")
+
+
+@app.post("/frame/main")
+def handle_main_frame(frame: IMUFrame):
+    """Frame endpoint for the MAIN band. Always just buffers/caches — never
+    tied to a record/compare session directly. Powers the main-band live
+    signal preview, and dual-mode sessions read the cached latest value via
+    combine_with_main() whenever a secondary-band frame comes in."""
+    global _latest_main_frame
+    f = frame.model_dump()
+    f["timestamp"] = f["timestamp"] or time.time()
+
+    _latest_main_frame = f
+    _main_frame_buffer.append(f)
+    if len(_main_frame_buffer) > MAIN_FRAME_BUFFER_MAX:
+        del _main_frame_buffer[: len(_main_frame_buffer) - MAIN_FRAME_BUFFER_MAX]
+
+    return {"frames_buffered": len(_main_frame_buffer)}
+
+
+@app.get("/main/state")
+def main_state():
+    """Live main-band signal preview — independent of record/compare mode."""
+    return {
+        "frames_count": len(_main_frame_buffer),
+        "last_frame": _main_frame_buffer[-1] if _main_frame_buffer else None,
+        "signals": frame_signals_from_frames(_main_frame_buffer),
+    }
 
 
 def _process_compare_frame(f: dict) -> CompareFrameResponse:
     _compare_session["frames"].append(f)
     frames = _compare_session["frames"]
     n = len(frames)
+
+    mode = _compare_session.get("mode", "single")
+    matrix_fn = frames_to_state_matrix_dual if mode == "dual" else frames_to_state_matrix
+    compare_indices = COMPARE_INDICES_DUAL if mode == "dual" else COMPARE_INDICES
 
     if n < 30:
         _compare_session["current_rep_progress"] = 0.0
@@ -548,7 +683,7 @@ def _process_compare_frame(f: dict) -> CompareFrameResponse:
 
     recent_frames = frames[-COMPARE_ANALYSIS_WINDOW:]
     window_offset = n - len(recent_frames)
-    X_full   = frames_to_state_matrix(recent_frames)
+    X_full   = matrix_fn(recent_frames)
     
     # Use reference PCA direction for consistent segmentation across all frames
     pca_v1 = _compare_session.get("pca_v1")
@@ -578,7 +713,7 @@ def _process_compare_frame(f: dict) -> CompareFrameResponse:
             local_s = max(0, s - window_offset)
             local_e = max(0, e - window_offset)
             seg_raw  = X_full[local_s:local_e + 1]
-            seg_data = extract_compare_slice(seg_raw)
+            seg_data = extract_compare_slice(seg_raw, compare_indices)
             order    = _compare_session["bezier_order"]
             if len(seg_data) < order + 2:
                 continue
@@ -643,13 +778,22 @@ def record_stop(bezier_order: int = 8):
 
     frames = _record_session["frames"]
     name   = _record_session["name"]
+    mode   = _record_session.get("mode", "single")
     _record_session.clear()
 
     if len(frames) < 20:
         raise HTTPException(422, "Too few frames (need ≥ 20).")
 
-    X_full    = frames_to_state_matrix(frames)
-    X_compare = extract_compare_slice(X_full)
+    if mode == "dual":
+        X_full = frames_to_state_matrix_dual(frames)
+        compare_indices = COMPARE_INDICES_DUAL
+        resampled_signals_fn = frame_signals_from_resampled_matrix_dual
+    else:
+        X_full = frames_to_state_matrix(frames)
+        compare_indices = COMPARE_INDICES
+        resampled_signals_fn = frame_signals_from_resampled_matrix
+
+    X_compare = extract_compare_slice(X_full, compare_indices)
 
     z1, V1, mu_z, sigma_z = pca_first_component(X_full)
     segments = segment_repetitions(z1)
@@ -674,10 +818,11 @@ def record_stop(bezier_order: int = 8):
     ref_P    = np.mean(seg_cps, axis=0)
     ref_amp  = reference_amplitude(ref_P)
     dom_axis = dominant_angle_axis(X_full)
-    reference_plot_signals = frame_signals_from_resampled_matrix(X_full)
+    reference_plot_signals = resampled_signals_fn(X_full)
 
     save_motion(name, {
         "name": name,
+        "mode": mode,
         "bezier_order": bezier_order,
         "n_reps": len(seg_cps),
         "control_points": ref_P,
@@ -696,6 +841,7 @@ def record_stop(bezier_order: int = 8):
     return {
         "status": "saved",
         "motion_name": name,
+        "mode": mode,
         "reps_detected": len(seg_cps),
         "n_frames": len(frames),
         "dominant_axis": dom_axis,
@@ -724,6 +870,7 @@ def get_motion_info(name: str):
     d = load_motion(name)
     return {
         "name": d["name"],
+        "mode": d.get("mode", "single"),
         "bezier_order": d["bezier_order"],
         "n_reps_in_reference": d["n_reps"],
         "n_frames": d["n_frames"],
@@ -739,6 +886,7 @@ def get_motion_info(name: str):
 @app.post("/compare/start")
 def compare_start(req: CompareStartRequest):
     ref = load_motion(req.reference_name)
+    mode = ref.get("mode", "single")
     ref_P   = ref["control_points"]
     ref_amp = float(ref.get("ref_amplitude") or reference_amplitude(ref_P))
     
@@ -747,13 +895,16 @@ def compare_start(req: CompareStartRequest):
     pca_mu = np.array(ref.get("pca_mu", []))
     pca_sigma = np.array(ref.get("pca_sigma", []))
 
+    fallback_signals_fn = frame_signals_from_control_points_dual if mode == "dual" else frame_signals_from_control_points
+
     _compare_session.clear()
     _compare_session.update({
         "reference_name": req.reference_name,
+        "mode": mode,
         "ref_P": ref_P,
         "ref_amp": ref_amp,
         "ref_dominant_axis": ref.get("dominant_axis", "roll"),
-        "ref_signals": ref.get("reference_plot_signals") or frame_signals_from_control_points(ref_P),
+        "ref_signals": ref.get("reference_plot_signals") or fallback_signals_fn(ref_P),
         "bezier_order": req.bezier_order,
         "pca_v1": pca_v1,  # Store reference PCA direction
         "pca_mu": pca_mu,  # Store reference z-score mean
@@ -769,6 +920,7 @@ def compare_start(req: CompareStartRequest):
     return {
         "status": "comparing",
         "reference": req.reference_name,
+        "mode": mode,
         "ref_amplitude": ref_amp,
         "dominant_axis": _compare_session["ref_dominant_axis"],
     }
@@ -812,19 +964,22 @@ def compare_stop():
 def record_state():
     if not _record_session:
         return {
-            "active": False, "motion_name": None, "frames_count": 0,
+            "active": False, "motion_name": None, "mode": "single", "frames_count": 0,
             "elapsed_seconds": 0.0, "last_frame": None,
             "signals": frame_signals_from_frames([]),
             "status_text": "No active recording.", "reps_detected": 0,
         }
     frames = _record_session["frames"]
+    mode = _record_session.get("mode", "single")
+    signals_fn = frame_signals_from_frames_dual if mode == "dual" else frame_signals_from_frames
     return {
         "active": True,
         "motion_name": _record_session.get("name"),
+        "mode": mode,
         "frames_count": len(frames),
         "elapsed_seconds": round(time.time() - float(_record_session["started_at"]), 1),
         "last_frame": frames[-1] if frames else None,
-        "signals": frame_signals_from_frames(frames),
+        "signals": signals_fn(frames),
         "status_text": f"Recording {len(frames)} frames…",
         "reps_detected": 0,
     }
@@ -835,7 +990,7 @@ def compare_state():
     if not _compare_session:
         empty = frame_signals_from_frames([])
         return {
-            "active": False, "reference_name": None, "bezier_order": None,
+            "active": False, "reference_name": None, "mode": "single", "bezier_order": None,
             "frames_count": 0, "elapsed_seconds": 0.0,
             "reps_detected": 0, "current_rep_progress": 0.0,
             "last_rep_curve_distance": 0.0, "last_rep_amplitude_diff": 0.0,
@@ -845,9 +1000,13 @@ def compare_state():
             "completed_reps": [], "last_frame": None,
         }
     frames = _compare_session["frames"]
+    mode = _compare_session.get("mode", "single")
+    signals_fn = frame_signals_from_frames_dual if mode == "dual" else frame_signals_from_frames
+    empty = frame_signals_from_frames_dual([]) if mode == "dual" else frame_signals_from_frames([])
     return {
         "active": True,
         "reference_name": _compare_session.get("reference_name"),
+        "mode": mode,
         "bezier_order": _compare_session.get("bezier_order"),
         "frames_count": len(frames),
         "elapsed_seconds": round(time.time() - float(_compare_session["started_at"]), 1),
@@ -859,9 +1018,8 @@ def compare_state():
         "direction_ok": bool(_compare_session.get("last_direction_ok", True)),
         "direction_hint": str(_compare_session.get("last_direction_hint", "")),
         "feedback": str(_compare_session.get("last_feedback", "Waiting for data…")),
-        "live_signals": frame_signals_from_frames(frames),
-        "reference_signals": _compare_session.get("ref_signals")
-                             or frame_signals_from_frames([]),
+        "live_signals": signals_fn(frames),
+        "reference_signals": _compare_session.get("ref_signals") or empty,
         "completed_reps": _compare_session.get("completed_reps", []),
         "last_frame": frames[-1] if frames else None,
     }
@@ -897,7 +1055,7 @@ def get_link_status():
 
 @app.get("/health")
 def health():
-    return {"service": "Twyst Backend", "version": "0.3.0",
+    return {"service": "Twyst Backend", "version": "0.4.0",
             "status": "ok", "saved_motions": list_motions()}
 
 
@@ -908,3 +1066,8 @@ def root():
         return ui.read_text(encoding="utf-8")
     return HTMLResponse(
         "<h1>Twyst Backend v0.2</h1><p>Place ui.html next to main.py</p>")
+
+
+if __name__ == "__main__":
+    import uvicorn
+    uvicorn.run(app, host="0.0.0.0", port=8000)
