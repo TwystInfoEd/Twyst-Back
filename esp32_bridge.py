@@ -16,9 +16,16 @@ NUM_RE = r"[-+]?(?:\d+(?:\.\d*)?|\.\d+)"
 LINK_RE = re.compile(r"^LINK\s+main_connected=(\d)\s+state=(\w+)")
 
 REQUIRED_FRAME_KEYS = {
-    "acc_x", "acc_y", "acc_z",
-    "gyro_x", "gyro_y", "gyro_z",
-    "roll", "pitch", "yaw",
+    "ts",
+    "acc_x",
+    "acc_y",
+    "acc_z",
+    "gyro_x",
+    "gyro_y",
+    "gyro_z",
+    "roll",
+    "pitch",
+    "yaw",
 }
 
 
@@ -54,7 +61,7 @@ def parse_frame_line(line: str) -> dict | None:
 
 async def post_link_status(status: dict, base_url: str, client: httpx.AsyncClient):
     payload = dict(status)
-    payload["timestamp"] = time.time()
+    payload["host_timestamp"] = time.time()
     try:
         await client.post(f"{base_url.rstrip('/')}/link/status", json=payload, timeout=1.0)
     except Exception as e:
@@ -63,7 +70,7 @@ async def post_link_status(status: dict, base_url: str, client: httpx.AsyncClien
 
 async def post_frame(frame: dict, endpoint: str, client: httpx.AsyncClient):
     payload = dict(frame)
-    payload["timestamp"] = time.time()
+    payload["host_timestamp"] = time.time()
     try:
         r = await client.post(endpoint, json=payload, timeout=1.0)
         try:

@@ -83,7 +83,9 @@ class IMUFrame(BaseModel):
     roll: float = 0.0
     pitch: float = 0.0
     yaw: float = 0.0
-    timestamp: Optional[float] = None
+
+    ts: Optional[int] = None
+    host_timestamp: Optional[float] = None
 
 
 class RecordStartRequest(BaseModel):
@@ -472,6 +474,7 @@ def frame_signals_from_frames(frames: list[dict],
                                ) -> dict[str, list[float]]:
     if not frames:
         return frame_signals_from_matrix(np.empty((0, 9)))
+    
     return frame_signals_from_matrix(frames_to_state_matrix(frames[-limit:]))
 
 
@@ -615,7 +618,9 @@ def handle_frame(frame: IMUFrame):
     session automatically. In dual mode, each frame is merged with the most
     recently seen main-band frame before being stored/analysed."""
     f = frame.model_dump()
-    f["timestamp"] = f["timestamp"] or time.time()
+
+    if f["host_timestamp"] is None:
+        f["host_timestamp"] = time.time()
 
     if _record_session:
         stored = combine_with_main(f) if _record_session.get("mode") == "dual" else f
@@ -960,6 +965,7 @@ def compare_stop():
 
 # state polling for the UI 
 
+#uncomment 
 @app.get("/record/state")
 def record_state():
     if not _record_session:
@@ -983,6 +989,32 @@ def record_state():
         "status_text": f"Recording {len(frames)} frames…",
         "reps_detected": 0,
     }
+
+# @app.get("/record/state")
+# def record_state():
+#     if not _record_session:
+#         ...
+
+#     frames = _record_session["frames"]
+
+#     print("Last 5 raw frames:")
+#     for f in frames[-5:]:
+#         print(
+#             f["pitch"],
+#             f["roll"],
+#             f["acc_x"],
+#             f["gyro_x"]
+#         )
+
+#     signals = frame_signals_from_frames(frames)
+
+#     print("Last 5 signal pitch:", signals["pitch"][-5:])
+
+#     return {
+#         ...
+#         "signals": signals,
+#         ...
+# }
 
 
 @app.get("/compare/state")
