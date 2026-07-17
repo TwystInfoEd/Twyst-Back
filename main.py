@@ -352,18 +352,18 @@ def reference_amplitude(P_ref: np.ndarray, n: int = 200) -> float:
 
 def dominant_angle_axis(X: np.ndarray) -> str:
     """
-    Which of roll/pitch/yaw carries the most range in this recording?
-    Always reads the SECONDARY band's angle columns (0, 1, 2) — even in dual
-    mode, direction detection is based on the secondary band only, since
-    that's the band that's always present in both modes.
-    For a correct bicep curl (wrist band, arm curling up-down) this should
-    be 'roll' or 'pitch' depending on how the band is oriented.
-    If the user swings the arm sideways instead, 'yaw' will dominate.
+    Which of roll/pitch carries the most range in this recording?
+    Yaw is intentionally excluded: without a magnetometer, yaw is
+    gyro-only dead reckoning and drifts open-loop over time, so its
+    "range" is not a meaningful signal for which plane the movement
+    is in. (Previously yaw was always exactly 0 as a side effect of
+    computeYaw() being fed zeroed magnetometer inputs — that's no
+    longer true now that Madgwick actively integrates yaw, so it can
+    no longer be included here even implicitly.)
     """
     ranges = {
         "roll":  float(X[:, 0].max() - X[:, 0].min()),
         "pitch": float(X[:, 1].max() - X[:, 1].min()),
-        "yaw":   float(X[:, 2].max() - X[:, 2].min()),
     }
     return max(ranges, key=ranges.__getitem__)
 
@@ -401,12 +401,13 @@ def assess_live_direction(X_full: np.ndarray,
         return True, ""
 
     recent = X_full[-min(window, len(X_full)):]
-    angle_range = float(np.max(recent[:, :3]) - np.min(recent[:, :3]))
+    # Only roll/pitch (columns 0,1) — yaw (column 2) drifts open-loop
+    # without a magnetometer and isn't a meaningful direction signal.
+    angle_range = float(np.max(recent[:, :2]) - np.min(recent[:, :2]))
     if angle_range < min_range:
         return True, ""
 
     return check_direction(recent, ref_dominant_axis)
-
 
 # Score & feedback 
 
