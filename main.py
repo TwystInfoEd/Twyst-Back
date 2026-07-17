@@ -300,6 +300,23 @@ def eval_bezier(P: np.ndarray, n: int = 200) -> np.ndarray:
     order = P.shape[0] - 1
     return bernstein_matrix(n, order) @ P
 
+def best_phase_shift(c1: np.ndarray, c2: np.ndarray,
+                     max_shift_ratio: float = 0.25) -> int:
+    """Return the shift (applied to c1) that best aligns c1 to c2."""
+    if len(c1) != len(c2):
+        n = min(len(c1), len(c2))
+        c1 = c1[:n]
+        c2 = c2[:n]
+    max_shift = max(0, int(len(c1) * max_shift_ratio))
+    best_shift = 0
+    best = float("inf")
+    for shift in range(-max_shift, max_shift + 1):
+        shifted = np.roll(c1, shift, axis=0)
+        score = float(np.mean(np.linalg.norm(shifted - c2, axis=1)))
+        if score < best:
+            best = score
+            best_shift = shift
+    return best_shift
 
 def best_phase_aligned_distance(c1: np.ndarray, c2: np.ndarray,
                                 max_shift_ratio: float = 0.25) -> float:
@@ -690,18 +707,16 @@ def _process_compare_frame(f: dict) -> CompareFrameResponse:
     recent_frames = frames[-COMPARE_ANALYSIS_WINDOW:]
     window_offset = n - len(recent_frames)
     X_full   = matrix_fn(recent_frames)
-    
-    # Use reference PCA direction for consistent segmentation across all frames
+    X_compare_live = extract_compare_slice(X_full, compare_indices)
+
     pca_v1 = _compare_session.get("pca_v1")
     pca_mu = _compare_session.get("pca_mu")
     pca_sigma = _compare_session.get("pca_sigma")
-    
+
     if pca_v1 is not None and len(pca_v1) > 0:
-        # Project live data onto reference PCA direction
-        z1 = project_onto_pca(X_full, pca_v1, pca_mu, pca_sigma)
+        z1 = project_onto_pca(X_compare_live, pca_v1, pca_mu, pca_sigma)
     else:
-        # Fallback for old reference files without PCA data
-        z1, _, _, _ = pca_first_component(X_full)
+        z1, _, _, _ = pca_first_component(X_compare_live)
     
     segments = segment_repetitions(z1)
     segments = [(s + window_offset, e + window_offset) for s, e in segments]
@@ -801,7 +816,8 @@ def record_stop(bezier_order: int = 8):
 
     X_compare = extract_compare_slice(X_full, compare_indices)
 
-    z1, V1, mu_z, sigma_z = pca_first_component(X_full)
+    # was: pca_first_component(X_full)
+    z1, V1, mu_z, sigma_z = pca_first_component(X_compare)
     segments = segment_repetitions(z1)
 
     if not segments:
@@ -821,9 +837,38 @@ def record_stop(bezier_order: int = 8):
         raise HTTPException(422,
             "Could not fit Bézier segments — try recording more repetitions.")
 
-    ref_P    = np.mean(seg_cps, axis=0)
-    ref_amp  = reference_amplitude(ref_P)
-    dom_axis = dominant_angle_axis(X_full)
+    if len(seg_cps) > 1:
+    # Averaging raw Bézier control points across reps silently damps
+    # amplitude if reps aren't phase-aligned (same failure mode as
+    # averaging out-of-phase sine waves). Align each rep's evaluated
+    # curve to a common anchor first, average in curve space, then
+    # re-fit a single Bézier to the aligned average.
+        n_eval = 200
+        curves = [eval_bezier(P, n=n_eval) for P in seg_cps]
+        anchor = curves[0]
+        aligned = [anchor]
+        for c in curves[1:]:
+            shift = best_phase_shift(c, anchor)
+            aligned.append(np.roll(c, shift, axis=0))
+        mean_curve = np.mean(aligned, axis=0)
+
+        B = bernstein_matrix(n_eval, bezier_order)
+        BtB = B.T @ B + 1e-4 * np.eye(bezier_order + 1)
+        ref_P = np.linalg.solve(BtB, B.T @ mean_curve)
+    else:
+        ref_P = seg_cps[0]
+        ref_amp  = reference_amplitude(ref_P)
+    # Determine the dominant axis per-rep and take the majority. Using the
+    # whole raw recording (which includes rest periods between reps, minor
+    # drift while repositioning, etc.) can report a different axis than any
+    # individual rep actually shows — and live checks only ever see one rep
+    # at a time, so the reference needs to be computed on the same scope.
+    seg_axes = []
+    for s, e in segments:
+        seg = X_full[s:e + 1]
+        if len(seg) >= 4:
+            seg_axes.append(dominant_angle_axis(seg))
+    dom_axis = max(set(seg_axes), key=seg_axes.count) if seg_axes else dominant_angle_axis(X_full)
     reference_plot_signals = resampled_signals_fn(X_full)
 
     save_motion(name, {
