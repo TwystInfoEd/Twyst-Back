@@ -2,6 +2,7 @@ import json
 import time
 from pathlib import Path
 from typing import Optional
+from weakref import ref
 
 import numpy as np
 from fastapi import FastAPI, HTTPException
@@ -200,16 +201,11 @@ def segment_repetitions(z1: np.ndarray,
                          alpha: float = 0.12,
                          min_factor: float = 0.4,
                          max_factor: float = 2.5) -> list[tuple[int, int]]:
-    """
-    Segment reps by finding trough→peak→trough cycles in the first PC signal.
-    This is more stable for live streams than derivative sign flips and can
-    separate multiple curls in one comparison stream.
-    """
     T = len(z1)
     if T < 10:
         return []
 
-    win = min(21, max(5, (T // 4) * 2 + 1))
+    win = min(11, max(5, (T // 10) * 2 + 1))
     if win % 2 == 0:
         win += 1
     smooth = savgol_filter(z1, window_length=win, polyorder=2)
@@ -277,23 +273,27 @@ def bernstein_matrix(n_points: int, order: int) -> np.ndarray:
     return B
 
 
-def fit_bezier(segment: np.ndarray, order: int = 8,
-               lam: float = 1e-4) -> np.ndarray:
-    """
-    Fit a Bézier curve to `segment` (T_j, D). Works for any D (8-dim
-    single-band or 16-dim dual-band compare vectors).
-    The data is z-score normalised inside this function so that different
-    physical units (degrees, g, deg/s) sit on an equal scale.  Control
-    points are returned in the normalised space; comparison also happens
-    in normalised space so the units cancel out.
-    """
+def fit_bezier(segment: np.ndarray, order: int = 8, lam: float = 5e-2,
+               mu: np.ndarray | None = None, sigma: np.ndarray | None = None) -> np.ndarray:
     T_j, D = segment.shape
     if T_j <= order + 1:
         raise ValueError(f"Segment too short ({T_j} frames) for Bézier order {order}")
-    seg_norm, _, _ = zscore_normalise(segment)
+
+    if mu is not None and sigma is not None:
+        seg_norm = (segment - mu) / sigma
+    else:
+        seg_norm, _, _ = zscore_normalise(segment)
+
+    if T_j >= 7:
+        win = min(7, T_j - (1 - T_j % 2))
+        if win % 2 == 0:
+            win -= 1
+        if win >= 5:
+            seg_norm = savgol_filter(seg_norm, window_length=win, polyorder=2, axis=0)
+
     B = bernstein_matrix(T_j, order)
     BtB = B.T @ B + lam * np.eye(order + 1)
-    return np.linalg.solve(BtB, B.T @ seg_norm)   # (order+1, D) in normalised space
+    return np.linalg.solve(BtB, B.T @ seg_norm)
 
 
 def eval_bezier(P: np.ndarray, n: int = 200) -> np.ndarray:
@@ -606,6 +606,11 @@ def load_motion(name: str) -> dict:
         data["pca_mu"] = np.array(data["pca_mu"])
     if "pca_sigma" in data:
         data["pca_sigma"] = np.array(data["pca_sigma"])
+    
+    if "cmp_mu" in data:
+        data["cmp_mu"] = np.array(data["cmp_mu"])
+    if "cmp_sigma" in data:
+        data["cmp_sigma"] = np.array(data["cmp_sigma"])
     data.setdefault("mode", "single")  # old files predate dual mode
     return data
 
@@ -717,7 +722,7 @@ def _process_compare_frame(f: dict) -> CompareFrameResponse:
         z1 = project_onto_pca(X_compare_live, pca_v1, pca_mu, pca_sigma)
     else:
         z1, _, _, _ = pca_first_component(X_compare_live)
-    
+
     segments = segment_repetitions(z1)
     segments = [(s + window_offset, e + window_offset) for s, e in segments]
 
@@ -739,7 +744,12 @@ def _process_compare_frame(f: dict) -> CompareFrameResponse:
             if len(seg_data) < order + 2:
                 continue
             try:
-                P_j    = fit_bezier(seg_data, order=order)
+                cmp_mu = _compare_session.get("cmp_mu")
+                cmp_sigma = _compare_session.get("cmp_sigma")
+                if cmp_mu is not None and len(cmp_mu) > 0:
+                    P_j = fit_bezier(seg_data, order=order, mu=cmp_mu, sigma=cmp_sigma)
+                else:
+                    P_j = fit_bezier(seg_data, order=order)
                 ref_P  = _compare_session["ref_P"]
                 min_cp = min(P_j.shape[0], ref_P.shape[0])
                 min_d  = min(P_j.shape[1], ref_P.shape[1])
@@ -818,6 +828,7 @@ def record_stop(bezier_order: int = 8):
 
     # was: pca_first_component(X_full)
     z1, V1, mu_z, sigma_z = pca_first_component(X_compare)
+    Xn_cmp, mu_cmp, sigma_cmp = zscore_normalise(X_compare)
     segments = segment_repetitions(z1)
 
     if not segments:
@@ -829,7 +840,7 @@ def record_stop(bezier_order: int = 8):
         if len(seg) < bezier_order + 2:
             continue
         try:
-            seg_cps.append(fit_bezier(seg, order=bezier_order))
+            seg_cps.append(fit_bezier(seg, order=bezier_order, mu=mu_cmp, sigma=sigma_cmp))
         except ValueError:
             pass
 
@@ -838,11 +849,6 @@ def record_stop(bezier_order: int = 8):
             "Could not fit Bézier segments — try recording more repetitions.")
 
     if len(seg_cps) > 1:
-    # Averaging raw Bézier control points across reps silently damps
-    # amplitude if reps aren't phase-aligned (same failure mode as
-    # averaging out-of-phase sine waves). Align each rep's evaluated
-    # curve to a common anchor first, average in curve space, then
-    # re-fit a single Bézier to the aligned average.
         n_eval = 200
         curves = [eval_bezier(P, n=n_eval) for P in seg_cps]
         anchor = curves[0]
@@ -857,7 +863,9 @@ def record_stop(bezier_order: int = 8):
         ref_P = np.linalg.solve(BtB, B.T @ mean_curve)
     else:
         ref_P = seg_cps[0]
-        ref_amp  = reference_amplitude(ref_P)
+
+    ref_amp = reference_amplitude(ref_P)   
+
     # Determine the dominant axis per-rep and take the majority. Using the
     # whole raw recording (which includes rest periods between reps, minor
     # drift while repositioning, etc.) can report a different axis than any
@@ -887,6 +895,8 @@ def record_stop(bezier_order: int = 8):
         "pca_mu": mu_z.tolist(),  # Store z-score mean
         "pca_sigma": sigma_z.tolist(),  # Store z-score std
         "recorded_at": time.time(),
+        "cmp_mu": mu_cmp.tolist(),
+        "cmp_sigma": sigma_cmp.tolist(),
     })
 
     return {
@@ -945,6 +955,8 @@ def compare_start(req: CompareStartRequest):
     pca_v1 = np.array(ref.get("pca_v1", []))
     pca_mu = np.array(ref.get("pca_mu", []))
     pca_sigma = np.array(ref.get("pca_sigma", []))
+    cmp_mu = np.array(ref.get("cmp_mu", []))
+    cmp_sigma = np.array(ref.get("cmp_sigma", []))
 
     fallback_signals_fn = frame_signals_from_control_points_dual if mode == "dual" else frame_signals_from_control_points
 
@@ -960,6 +972,8 @@ def compare_start(req: CompareStartRequest):
         "pca_v1": pca_v1,  # Store reference PCA direction
         "pca_mu": pca_mu,  # Store reference z-score mean
         "pca_sigma": pca_sigma,  # Store reference z-score std
+        "cmp_mu": cmp_mu,
+        "cmp_sigma": cmp_sigma,
         "frames": [],
         "completed_reps": [],
         "started_at": time.time(),
