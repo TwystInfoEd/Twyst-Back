@@ -91,15 +91,12 @@ class IMUFrame(BaseModel):
 
 class RecordStartRequest(BaseModel):
     motion_name: str
-    mode: str = "single"  # "single" (secondary band only) or "dual" (secondary + main, combined)
+    mode: str = "single"  
 
 
 class CompareStartRequest(BaseModel):
     reference_name: str
-    bezier_order: int = 8
-    # mode is intentionally NOT accepted here — it's read from the saved
-    # reference itself, so a live session can never mismatch its reference's
-    # dimensionality.
+    bezier_order: int = 6
 
 
 class CompareFrameResponse(BaseModel):
@@ -132,9 +129,8 @@ def frames_to_state_matrix_dual(frames: list[dict]) -> np.ndarray:
 def combine_with_main(f: dict) -> dict:
     """
     Merge a secondary-band frame with the most recently seen main-band frame
-    (zero-order hold — main band only reports every ~75ms, secondary faster)
     into a combined dict carrying both bands' keys. Used for dual-mode
-    sessions only; single-mode sessions never call this.
+    sessions only.
     """
     combined = dict(f)
     m = _latest_main_frame or {}
@@ -151,30 +147,25 @@ def combine_with_main(f: dict) -> dict:
 
 
 def extract_compare_slice(X: np.ndarray, indices: list[int]) -> np.ndarray:
-    """Drop yaw column(s) (always 0 on this hardware). indices selects which columns to keep."""
     return X[:, indices]
 
 
 def zscore_normalise(X: np.ndarray) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     """
-    Z-score normalise columns.  Crucial: without this, gyro values (range ~100 deg/s)
-    dominate PCA over angle values (range ~90°) by a factor of ~10x, causing the
-    first principal component to track gyro noise instead of the actual motion cycle.
+    Z-score normalise columns - important
     """
     mu = X.mean(axis=0)
     sigma = X.std(axis=0)
-    sigma[sigma < 1e-6] = 1.0          # prevent divide-by-zero on constant columns
+    sigma[sigma < 1e-6] = 1.0         
     return (X - mu) / sigma, mu, sigma
 
 
-# PCA-based repetition segmentation (§3.2) 
-
 def pca_first_component(X: np.ndarray) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
     """
-    Z-score normalise then SVD → first PC projection z1 and the PCA component vector.
+    Z-score normalise then SVD 
     Works for any column count (9-dim single-band or 18-dim dual-band).
     Returns: (z1, V1, mu, sigma) where:
-      - z1: Projection onto first PC, shape (T,)
+      - z1: Projection onto first PC, shape (T)
       - V1: First principal component vector (for reuse during comparison)
       - mu, sigma: Z-score parameters (for consistency)
     """
@@ -319,12 +310,8 @@ def best_phase_shift(c1: np.ndarray, c2: np.ndarray,
     return best_shift
 
 def best_phase_aligned_distance(c1: np.ndarray, c2: np.ndarray,
-                                max_shift_ratio: float = 0.25) -> float:
-    """
-    Return the mean L2 distance after searching for the best temporal shift.
-    This makes comparison robust when a rep starts later or earlier than the
-    reference recording.
-    """
+                                max_shift_ratio: float = 0.5) -> float:
+ 
     if len(c1) != len(c2):
         n = min(len(c1), len(c2))
         c1 = c1[:n]
@@ -368,16 +355,6 @@ def reference_amplitude(P_ref: np.ndarray, n: int = 200) -> float:
 # direction detection
 
 def dominant_angle_axis(X: np.ndarray) -> str:
-    """
-    Which of roll/pitch carries the most range in this recording?
-    Yaw is intentionally excluded: without a magnetometer, yaw is
-    gyro-only dead reckoning and drifts open-loop over time, so its
-    "range" is not a meaningful signal for which plane the movement
-    is in. (Previously yaw was always exactly 0 as a side effect of
-    computeYaw() being fed zeroed magnetometer inputs — that's no
-    longer true now that Madgwick actively integrates yaw, so it can
-    no longer be included here even implicitly.)
-    """
     ranges = {
         "roll":  float(X[:, 0].max() - X[:, 0].min()),
         "pitch": float(X[:, 1].max() - X[:, 1].min()),
@@ -426,35 +403,34 @@ def assess_live_direction(X_full: np.ndarray,
 
     return check_direction(recent, ref_dominant_axis)
 
-# Score & feedback 
 
-def motion_score(d_curve: float, delta_A: float, ref_amp: float) -> float:
-    """
-    Normalise by the reference amplitude.
-    - A rep identical to the reference → 100.
-    - A rep whose shape deviates by one full amplitude → ≈ 0.
-    d_curve contributes 70 % of the penalty; delta_A (range-of-motion) 30 %.
-    """
+def motion_score(d_curve: float, delta_A: float, ref_amp: float,
+                  tolerance: float = 0.6) -> float:
+  
     if ref_amp < 1e-6:
         return 0.0
-    penalty = (d_curve / ref_amp) * 0.70 + (delta_A / ref_amp) * 0.30
+    d_ratio  = max(0.0, (d_curve  / ref_amp) - tolerance)
+    dA_ratio = max(0.0, (delta_A / ref_amp) - tolerance)
+    penalty = d_ratio * 0.50 + dA_ratio * 0.50   
     return round(float(max(0.0, min(100.0, 100.0 * (1.0 - penalty)))), 1)
 
 
 def feedback_from_metrics(d_curve: float, delta_A: float,
                            ref_amp: float, direction_ok: bool,
-                           direction_hint: str) -> str:
+                           direction_hint: str, score: float) -> str:
     if not direction_ok:
         return direction_hint
 
     if ref_amp < 1e-6:
         return "Cannot evaluate — reference amplitude is zero."
-
+    if score >= 75:
+        return "Great form! Very close to reference."
+    
     shape_ratio = d_curve / ref_amp
     amp_ratio   = delta_A / ref_amp
 
-    if shape_ratio < 0.08 and amp_ratio < 0.10:
-        return "Great form! Very close to reference."
+    # if shape_ratio < 0.28 and amp_ratio < 0.20:
+    #     return "Great form! Very close to reference."
 
     hints = []
     if shape_ratio > 0.30:
@@ -759,7 +735,7 @@ def _process_compare_frame(f: dict) -> CompareFrameResponse:
                 ref_amp  = _compare_session["ref_amp"]
                 dir_ok, dir_hint = check_direction(seg_raw, ref_dom)
                 score    = motion_score(d, dA, ref_amp)
-                fb       = feedback_from_metrics(d, dA, ref_amp, dir_ok, dir_hint)
+                fb       = feedback_from_metrics(d, dA, ref_amp, dir_ok, dir_hint, score)
 
                 _compare_session["completed_reps"].append({
                     "rep": len(_compare_session["completed_reps"]) + 1,
