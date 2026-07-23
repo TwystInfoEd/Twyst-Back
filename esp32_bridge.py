@@ -11,9 +11,7 @@ BAUD = 115200
 
 NUM_RE = r"[-+]?(?:\d+(?:\.\d*)?|\.\d+)"
 
-# Matches the firmware's periodic status line, e.g.:
-# LINK main_connected=1 state=ready uptime_ms=123456
-LINK_RE = re.compile(r"^LINK\s+main_connected=(\d)\s+state=(\w+)")
+LINK_RE = re.compile(r"^LINK\s+secondary_connected=(\d)\s+state=(\w+)")
 
 REQUIRED_FRAME_KEYS = {
     "ts",
@@ -30,23 +28,20 @@ REQUIRED_FRAME_KEYS = {
 
 
 def parse_link_line(line: str) -> dict | None:
-    """If `line` is a LINK status line, return a link-status payload, else None."""
     m = LINK_RE.search(line.strip())
     if not m:
         return None
     return {
-        "secondary_connected": True,  # we're reading this line over serial, so it's alive
-        "main_connected": bool(int(m.group(1))),
+        "main_connected": True,  
+        "secondary_connected": bool(int(m.group(1))),
         "state": m.group(2),
     }
 
-
 def parse_frame_line(line: str) -> dict | None:
     """
-    Parses a single-line, complete frame from either band, e.g.:
+    parses a single line, complete frame from either band:
       SEC acc_x=-1.770 acc_y=-0.240 acc_z=10.181 gyro_x=3.427 gyro_y=-0.924 gyro_z=-0.145 roll=-1.35 pitch=9.86 yaw=0.00
       MAIN imu2 acc_x=... acc_y=... ... yaw=0.00
-    Returns the parsed dict only if every required key is present, else None.
     """
     fields: dict = {}
     for m in re.finditer(rf"([a-zA-Z_]+)\s*[:=]\s*({NUM_RE})", line):
@@ -144,15 +139,13 @@ async def run(port: str, name: str, bezier_order: int = 8,
                                 print(f"  [main #{main_count}] posted; server replied: {resp}")
                         continue
 
-                    # Anything else (heartbeat, ping/pong, [SEC-BLE] logs, etc.)
-                    # is just firmware chatter — nothing to forward.
+                    # anything else is not forwarded
         except KeyboardInterrupt:
             print("\nStopping…")
         except serial.SerialException as e:
             print(f"\nSerial error: {e}")
         finally:
-            # Bridge is going down: we can no longer vouch for either band, so tell
-            # the backend both are unreachable instead of leaving stale "connected" state.
+         
             await post_link_status(
                 {"secondary_connected": False, "main_connected": False, "state": "bridge_stopped"},
                 base_url, client,

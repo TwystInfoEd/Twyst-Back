@@ -27,19 +27,13 @@ _compare_session: dict = {}
 UI_SIGNAL_WINDOW = 200
 COMPARE_ANALYSIS_WINDOW = 240
 
-# Band connection tracking.
-# The backend never talks to either ESP32 directly — the secondary band is
-# wired over USB to esp32_bridge.py, which relays a periodic "LINK" line
-# from the firmware here. secondary_connected means "the bridge is alive
-# and reading from the secondary band"; main_connected means "the secondary
-# band's BLE link to the main band is currently up".
 _link_state: dict = {
     "secondary_connected": False,
     "main_connected": False,
     "state": "unknown",
     "last_update": None,
 }
-LINK_STALE_SECONDS = 5.0  # if the bridge hasn't posted in this long, treat as unknown/offline
+LINK_STALE_SECONDS = 5.0  
 
 
 class LinkStatus(BaseModel):
@@ -64,10 +58,6 @@ COMPARE_INDICES_DUAL = [0, 1, 3, 4, 5, 6, 7, 8, 9, 10, 12, 13, 14, 15, 16, 17]
 
 MAIN_FRAME_BUFFER_MAX = 500
 
-# Live buffer + zero-order-hold cache for the main band's own stream. This is
-# independent of record/compare sessions so the main-band signal preview
-# always works, and it's also what dual-mode sessions merge into secondary
-# frames as they arrive.
 _main_frame_buffer: list[dict] = []
 _latest_main_frame: Optional[dict] = None
 
@@ -113,7 +103,7 @@ class CompareFrameResponse(BaseModel):
 # state matrix helpers 
 
 def frames_to_state_matrix(frames: list[dict]) -> np.ndarray:
-    """Returns X (T, 9): [roll, pitch, yaw, acc_x, acc_y, acc_z, gyro_x, gyro_y, gyro_z]."""
+    """returns X (T, 9): [roll, pitch, yaw, acc_x, acc_y, acc_z, gyro_x, gyro_y, gyro_z]"""
     rows = [[f["roll"], f["pitch"], f["yaw"],
              f["acc_x"], f["acc_y"], f["acc_z"],
              f["gyro_x"], f["gyro_y"], f["gyro_z"]] for f in frames]
@@ -121,15 +111,15 @@ def frames_to_state_matrix(frames: list[dict]) -> np.ndarray:
 
 
 def frames_to_state_matrix_dual(frames: list[dict]) -> np.ndarray:
-    """Returns X (T, 18): secondary band's 9 columns, then main band's 9 (m_ prefixed)."""
+    """returns X (T, 18): secondary band's 9 columns, then main band's 9 """
     rows = [[f.get(c, 0.0) for c in DUAL_COLUMNS] for f in frames]
     return np.array(rows, dtype=float)
 
 
 def combine_with_main(f: dict) -> dict:
     """
-    Merge a secondary-band frame with the most recently seen main-band frame
-    into a combined dict carrying both bands' keys. Used for dual-mode
+    merge a secondary-band frame with the most recently seen main-band frame
+    into a combined dict carrying both bands' keys - used for dual-mode
     sessions only.
     """
     combined = dict(f)
@@ -151,9 +141,7 @@ def extract_compare_slice(X: np.ndarray, indices: list[int]) -> np.ndarray:
 
 
 def zscore_normalise(X: np.ndarray) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
-    """
-    Z-score normalise columns - important
-    """
+    
     mu = X.mean(axis=0)
     sigma = X.std(axis=0)
     sigma[sigma < 1e-6] = 1.0         
@@ -163,8 +151,8 @@ def zscore_normalise(X: np.ndarray) -> tuple[np.ndarray, np.ndarray, np.ndarray]
 def pca_first_component(X: np.ndarray) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
     """
     Z-score normalise then SVD 
-    Works for any column count (9-dim single-band or 18-dim dual-band).
-    Returns: (z1, V1, mu, sigma) where:
+    works for any column count (9-dim single-band or 18-dim dual-band).
+    returns: (z1, V1, mu, sigma) where:
       - z1: Projection onto first PC, shape (T)
       - V1: First principal component vector (for reuse during comparison)
       - mu, sigma: Z-score parameters (for consistency)
@@ -178,11 +166,7 @@ def pca_first_component(X: np.ndarray) -> tuple[np.ndarray, np.ndarray, np.ndarr
 
 
 def project_onto_pca(X: np.ndarray, V1: np.ndarray, mu: np.ndarray, sigma: np.ndarray) -> np.ndarray:
-    """
-    Project data X onto a pre-computed PCA direction V1.
-    Use the same z-score parameters (mu, sigma) as the reference.
-    Returns z1 signal, shape (T,).
-    """
+    
     Xn = (X - mu) / sigma
     Xc = Xn - Xn.mean(axis=0)
     return Xc @ V1
@@ -216,7 +200,6 @@ def segment_repetitions(z1: np.ndarray,
     )
 
     if len(extrema) < 3:
-        # fallback for flatter / shorter sequences where peak picking is too strict
         dz = np.zeros(T)
         dz[1:-1] = (smooth[2:] - smooth[:-2]) / 2.0
         sign = np.sign(dz)
@@ -254,7 +237,7 @@ def segment_repetitions(z1: np.ndarray,
             if min_factor * T_mean < (e - s) < max_factor * T_mean]
 
 
-# Bézier fitting (§3.3)
+# Bézier fitting
 
 def bernstein_matrix(n_points: int, order: int) -> np.ndarray:
     u = np.linspace(0, 1, n_points)
@@ -293,7 +276,6 @@ def eval_bezier(P: np.ndarray, n: int = 200) -> np.ndarray:
 
 def best_phase_shift(c1: np.ndarray, c2: np.ndarray,
                      max_shift_ratio: float = 0.25) -> int:
-    """Return the shift (applied to c1) that best aligns c1 to c2."""
     if len(c1) != len(c2):
         n = min(len(c1), len(c2))
         c1 = c1[:n]
@@ -331,14 +313,12 @@ def best_phase_aligned_distance(c1: np.ndarray, c2: np.ndarray,
 
 
 def curve_distance(P1: np.ndarray, P2: np.ndarray, n: int = 200) -> float:
-    """d_curve: mean L2 distance between evaluated curves (eq. 1 of paper)."""
     c1 = eval_bezier(P1, n)
     c2 = eval_bezier(P2, n)
     return best_phase_aligned_distance(c1, c2)
 
 
 def amplitude_diff(P1: np.ndarray, P2: np.ndarray, n: int = 200) -> float:
-    """ΔA: difference in peak excursion from curve mean (eq. 3 of paper)."""
     c1 = eval_bezier(P1, n)
     c2 = eval_bezier(P2, n)
     a1 = float(np.max(np.linalg.norm(c1 - c1.mean(axis=0), axis=1)))
@@ -347,7 +327,7 @@ def amplitude_diff(P1: np.ndarray, P2: np.ndarray, n: int = 200) -> float:
 
 
 def reference_amplitude(P_ref: np.ndarray, n: int = 200) -> float:
-    """Peak excursion of the reference — used to normalise the score."""
+    
     c = eval_bezier(P_ref, n)
     return float(np.max(np.linalg.norm(c - c.mean(axis=0), axis=1)))
 
@@ -364,7 +344,7 @@ def dominant_angle_axis(X: np.ndarray) -> str:
 
 def check_direction(X_live_seg: np.ndarray,
                     ref_dominant_axis: str) -> tuple[bool, str]:
-    """Return (direction_ok, human_readable_hint)."""
+    
     live_dom = dominant_angle_axis(X_live_seg)
     if live_dom == ref_dominant_axis:
         return True, f"Correct direction ({live_dom} dominant)"
@@ -387,16 +367,11 @@ def assess_live_direction(X_full: np.ndarray,
                           ref_dominant_axis: str,
                           min_range: float = 6.0,
                           window: int = 80) -> tuple[bool, str]:
-    """
-    Check the dominant angle axis on the most recent raw frames.
-    This is used for immediate feedback while a rep is still in progress.
-    """
+ 
     if X_full is None or len(X_full) < 8:
         return True, ""
 
     recent = X_full[-min(window, len(X_full)):]
-    # Only roll/pitch (columns 0,1) — yaw (column 2) drifts open-loop
-    # without a magnetometer and isn't a meaningful direction signal.
     angle_range = float(np.max(recent[:, :2]) - np.min(recent[:, :2]))
     if angle_range < min_range:
         return True, ""
@@ -429,8 +404,6 @@ def feedback_from_metrics(d_curve: float, delta_A: float,
     shape_ratio = d_curve / ref_amp
     amp_ratio   = delta_A / ref_amp
 
-    # if shape_ratio < 0.28 and amp_ratio < 0.20:
-    #     return "Great form! Very close to reference."
 
     hints = []
     if shape_ratio > 0.30:
@@ -495,7 +468,6 @@ def frame_signals_from_frames_dual(frames: list[dict],
 
 
 def resample_state_matrix(X: np.ndarray, n: int = UI_SIGNAL_WINDOW) -> np.ndarray:
-    """Linearly resample a state matrix to n samples for UI display. Column-count agnostic."""
     if X is None or len(X) == 0:
         return np.empty((0, X.shape[1] if X is not None and X.ndim == 2 else 9))
     if len(X) == 1:
@@ -637,13 +609,10 @@ def handle_frame(frame: IMUFrame):
 
 @app.post("/frame/main")
 def handle_main_frame(frame: IMUFrame):
-    """Frame endpoint for the MAIN band. Always just buffers/caches — never
-    tied to a record/compare session directly. Powers the main-band live
-    signal preview, and dual-mode sessions read the cached latest value via
-    combine_with_main() whenever a secondary-band frame comes in."""
     global _latest_main_frame
     f = frame.model_dump()
-    f["timestamp"] = f["timestamp"] or time.time()
+    if f["host_timestamp"] is None:
+        f["host_timestamp"] = time.time()
 
     _latest_main_frame = f
     _main_frame_buffer.append(f)
