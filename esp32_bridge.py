@@ -26,6 +26,19 @@ REQUIRED_FRAME_KEYS = {
     "yaw",
 }
 
+OPTIONAL_FRAME_KEYS = {"batt_v", "batt_pct"}
+
+
+def parse_frame_line(line: str) -> dict | None:
+    fields: dict = {}
+    for m in re.finditer(rf"([a-zA-Z_]+)\s*[:=]\s*({NUM_RE})", line):
+        key = m.group(1)
+        if key in REQUIRED_FRAME_KEYS or key in OPTIONAL_FRAME_KEYS:
+            try:
+                fields[key] = float(m.group(2))
+            except ValueError:
+                continue
+    return fields if REQUIRED_FRAME_KEYS.issubset(fields) else None
 
 def parse_link_line(line: str) -> dict | None:
     m = LINK_RE.search(line.strip())
@@ -37,21 +50,6 @@ def parse_link_line(line: str) -> dict | None:
         "state": m.group(2),
     }
 
-def parse_frame_line(line: str) -> dict | None:
-    """
-    parses a single line, complete frame from either band:
-      SEC acc_x=-1.770 acc_y=-0.240 acc_z=10.181 gyro_x=3.427 gyro_y=-0.924 gyro_z=-0.145 roll=-1.35 pitch=9.86 yaw=0.00
-      MAIN imu2 acc_x=... acc_y=... ... yaw=0.00
-    """
-    fields: dict = {}
-    for m in re.finditer(rf"([a-zA-Z_]+)\s*[:=]\s*({NUM_RE})", line):
-        key = m.group(1)
-        if key in REQUIRED_FRAME_KEYS:
-            try:
-                fields[key] = float(m.group(2))
-            except ValueError:
-                continue
-    return fields if REQUIRED_FRAME_KEYS.issubset(fields) else None
 
 
 async def post_link_status(status: dict, base_url: str, client: httpx.AsyncClient):

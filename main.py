@@ -36,6 +36,13 @@ _link_state: dict = {
 }
 LINK_STALE_SECONDS = 5.0  
 
+_battery_state: dict = {
+    "voltage": None,
+    "percent": None,
+    "last_update": None,
+}
+BATTERY_STALE_SECONDS = 10.0
+
 
 class LinkStatus(BaseModel):
     secondary_connected: bool
@@ -78,6 +85,8 @@ class IMUFrame(BaseModel):
 
     ts: Optional[int] = None
     host_timestamp: Optional[float] = None
+    batt_v: Optional[float] = None
+    batt_pct: Optional[float] = None
 
 
 class RecordStartRequest(BaseModel):
@@ -592,9 +601,20 @@ def handle_frame(frame: IMUFrame):
     session automatically. In dual mode, each frame is merged with the most
     recently seen main-band frame before being stored/analysed."""
     f = frame.model_dump()
-
+    #print(f"[FRAME DEBUG] keys={list(f.keys())} batt_v={f.get('batt_v')} batt_pct={f.get('batt_pct')}")
     if f["host_timestamp"] is None:
         f["host_timestamp"] = time.time()
+
+    if f.get("batt_v") is not None or f.get("batt_pct") is not None:
+        _battery_state.update({
+            "voltage": f.get("batt_v"),
+            "percent": f.get("batt_pct"),
+            "last_update": time.time(),
+        })
+        #print(f"[BATTERY] updated: v={f.get('batt_v')} pct={f.get('batt_pct')}")
+    # strip before storing bc battery voltage doesn't belong in the motion
+    f.pop("batt_v", None)
+    f.pop("batt_pct", None)
 
     if _record_session:
         stored = combine_with_main(f) if _record_session.get("mode") == "dual" else f
@@ -1004,6 +1024,7 @@ def record_state():
         "reps_detected": 0,
     }
 
+
 @app.get("/compare/state")
 def compare_state():
     if not _compare_session:
@@ -1044,7 +1065,7 @@ def compare_state():
     }
 
 
-# Band connection status 
+# band connection status 
  
 @app.post("/link/status")
 def update_link_status(status: LinkStatus):
@@ -1055,6 +1076,18 @@ def update_link_status(status: LinkStatus):
         "last_update": status.timestamp or time.time(),
     })
     return {"ok": True}
+
+@app.get("/battery/status")
+def get_battery_status():
+    last = _battery_state.get("last_update")
+    stale = last is None or (time.time() - last) > BATTERY_STALE_SECONDS
+    return {
+        "available": last is not None and not stale,
+        "voltage": _battery_state.get("voltage"),
+        "percent": _battery_state.get("percent"),
+        "stale": stale,
+        "last_update": last,
+    }
 
 @app.get("/mode/current")
 def get_current_mode():
