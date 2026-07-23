@@ -62,6 +62,21 @@ async def post_link_status(status: dict, base_url: str, client: httpx.AsyncClien
     except Exception as e:
         print(f"  [warn] link status post failed: {e}")
 
+async def poll_and_apply_mode(ser: serial.Serial, client: httpx.AsyncClient,
+                               base_url: str, last_mode: str) -> str:
+    try:
+        r = await client.get(f"{base_url.rstrip('/')}/mode/current", timeout=1.0)
+        mode = r.json().get("mode", "single")
+    except Exception as e:
+        print(f"  [warn] mode poll failed: {e}")
+        return last_mode
+
+    if mode != last_mode:
+        ser.write(f"MODE {mode}\n".encode("utf-8"))
+        print(f"  [mode] switched to {mode}")
+        return mode
+
+    return last_mode
 
 async def post_frame(frame: dict, endpoint: str, client: httpx.AsyncClient):
     payload = dict(frame)
@@ -88,6 +103,9 @@ async def run(port: str, name: str, bezier_order: int = 8,
     main_endpoint_path = main_endpoint_path or "/frame/main"
     endpoint_url = f"{base_url.rstrip('/')}{endpoint_path}"
     main_endpoint_url = f"{base_url.rstrip('/')}{main_endpoint_path}"
+    last_mode = "single"
+    last_mode_check = 0.0
+    MODE_POLL_INTERVAL = 1.0
 
     print(f"Opening {port} at {baud} baud.")
     print(f"  Secondary-band frames -> {endpoint_url}")
@@ -108,6 +126,10 @@ async def run(port: str, name: str, bezier_order: int = 8,
                 )
                 while True:
                     raw = ser.readline().decode("utf-8", errors="ignore")
+                    now_ts = time.time()
+                    if now_ts - last_mode_check >= MODE_POLL_INTERVAL:
+                        last_mode_check = now_ts
+                        last_mode = await poll_and_apply_mode(ser, client, base_url, last_mode)
                     if not raw:
                         continue
                     line = raw.rstrip()

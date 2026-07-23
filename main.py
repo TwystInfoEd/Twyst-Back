@@ -23,6 +23,7 @@ app.add_middleware(
 
 _record_session: dict = {}
 _compare_session: dict = {}
+_current_mode: str = "single"  
 
 UI_SIGNAL_WINDOW = 200
 COMPARE_ANALYSIS_WINDOW = 240
@@ -573,6 +574,8 @@ def list_motions() -> list[str]:
 def record_start(req: RecordStartRequest):
     if req.mode not in ("single", "dual"):
         raise HTTPException(400, "mode must be 'single' or 'dual'")
+    global _current_mode
+    _current_mode = req.mode
     _record_session.clear()
     _record_session.update({
         "name": req.motion_name,
@@ -756,6 +759,8 @@ def record_stop(bezier_order: int = 8):
     name   = _record_session["name"]
     mode   = _record_session.get("mode", "single")
     _record_session.clear()
+    global _current_mode
+    _current_mode = "single" 
 
     if len(frames) < 20:
         raise HTTPException(422, "Too few frames (need ≥ 20).")
@@ -895,8 +900,10 @@ def compare_start(req: CompareStartRequest):
     mode = ref.get("mode", "single")
     ref_P   = ref["control_points"]
     ref_amp = float(ref.get("ref_amplitude") or reference_amplitude(ref_P))
-    
-    # Load PCA parameters from reference for consistent segmentation
+    global _current_mode
+    _current_mode = mode
+
+    # load PCA parameters from reference for consistent segmentation
     pca_v1 = np.array(ref.get("pca_v1", []))
     pca_mu = np.array(ref.get("pca_mu", []))
     pca_sigma = np.array(ref.get("pca_sigma", []))
@@ -945,6 +952,8 @@ def compare_stop():
     ref_name = _compare_session["reference_name"]
     n_frames = len(_compare_session["frames"])
     _compare_session.clear()
+    global _current_mode
+    _current_mode = "single"
 
     if not reps:
         return {
@@ -994,33 +1003,6 @@ def record_state():
         "status_text": f"Recording {len(frames)} frames…",
         "reps_detected": 0,
     }
-
-# @app.get("/record/state")
-# def record_state():
-#     if not _record_session:
-#         ...
-
-#     frames = _record_session["frames"]
-
-#     print("Last 5 raw frames:")
-#     for f in frames[-5:]:
-#         print(
-#             f["pitch"],
-#             f["roll"],
-#             f["acc_x"],
-#             f["gyro_x"]
-#         )
-
-#     signals = frame_signals_from_frames(frames)
-
-#     print("Last 5 signal pitch:", signals["pitch"][-5:])
-
-#     return {
-#         ...
-#         "signals": signals,
-#         ...
-# }
-
 
 @app.get("/compare/state")
 def compare_state():
@@ -1073,7 +1055,10 @@ def update_link_status(status: LinkStatus):
         "last_update": status.timestamp or time.time(),
     })
     return {"ok": True}
- 
+
+@app.get("/mode/current")
+def get_current_mode():
+    return {"mode": _current_mode}
  
 @app.get("/link/status")
 def get_link_status():
